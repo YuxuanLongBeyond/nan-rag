@@ -9,11 +9,13 @@
 // ── 常量 ──────────────────────────────────────────
 const CORPUS_DIR = "corpus/";
 const INDEX_URL = "search_index.json";
+const INDEX_VERSION_URL = "index_version.json";
 const MANIFEST_URL = "works_manifest.json";
 const DB_NAME = "nan-rag-corpus";
-const DB_VERSION = 1;
+const DB_VERSION = 2;  // 升级：新增 indexMeta store
 const STORE_WORKS = "works";
 const STORE_META = "meta";
+const STORE_INDEX = "indexMeta";
 const COPYRIGHT_KEY = "nan-copyright-accepted";
 const API_KEY_STORAGE = "nan-deepseek-key";
 const API_URL = "https://api.deepseek.com/v1/chat/completions";
@@ -160,6 +162,9 @@ function openDB() {
       if (!db.objectStoreNames.contains(STORE_META)) {
         db.createObjectStore(STORE_META, { keyPath: "key" });
       }
+      if (!db.objectStoreNames.contains(STORE_INDEX)) {
+        db.createObjectStore(STORE_INDEX, { keyPath: "key" });
+      }
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror = (e) => reject(e.target.error);
@@ -184,10 +189,64 @@ async function putCachedWork(db, work, data) {
   });
 }
 
+/**
+ * 从 IndexedDB 读取缓存的搜索索引（原始 JSON 文本）。
+ * 返回 { version, raw } 或 null。
+ */
+async function getCachedIndex(db) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_INDEX, "readonly");
+    const req = tx.objectStore(STORE_INDEX).get("searchIndex");
+    req.onsuccess = () => {
+      const record = req.result;
+      if (record && record.raw && record.version) {
+        resolve({ version: record.version, raw: record.raw, count: record.count });
+      } else {
+        resolve(null);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * 将搜索索引的原始 JSON 文本存入 IndexedDB。
+ */
+async function putCachedIndex(db, version, raw, count) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_INDEX, "readwrite");
+    tx.objectStore(STORE_INDEX).put({
+      key: "searchIndex",
+      version,
+      raw,
+      count,
+      cachedAt: Date.now(),
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * 解析原始 JSON 并构建 _searchText 字段。
+ * 用 setTimeout 分段执行，避免阻塞 UI 线程。
+ */
+function parseAndBuildIndex(rawText) {
+  const arr = JSON.parse(rawText);
+  for (const item of arr) {
+    item._searchText = `${item.w} ${item.c} ${item.p}`.toLowerCase();
+  }
+  return arr;
+}
+
 // ── 数据加载 ──────────────────────────────────────
-async function loadSearchIndex() {
+/**
+ * 从网络下载搜索索引（带进度条），完成后缓存到 IndexedDB。
+ * 返回解析好的 index 数组。
+ */
+async function loadSearchIndexFromNetwork(version) {
   els.loadingText.textContent = "正在下载搜索索引...";
-  els.loadingBar.style.width = "20%";
+  els.loadingBar.style.width = "10%";
 
   const resp = await fetch(INDEX_URL);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${INDEX_URL}`);
@@ -203,26 +262,73 @@ async function loadSearchIndex() {
     chunks.push(value);
     loaded += value.length;
     if (total) {
-      const pct = 20 + Math.round((loaded / total) * 40);
+      const pct = 10 + Math.round((loaded / total) * 50);
       els.loadingBar.style.width = pct + "%";
       els.loadingText.textContent =
         `正在下载搜索索引... ${(loaded / 1024 / 1024).toFixed(1)} MB`;
     }
   }
 
-  // 合并并解析
+  // 合并原始文本
   els.loadingText.textContent = "正在解析搜索索引...";
-  const blob = new Blob(chunks);
-  const text = await blob.text();
-  state.index = JSON.parse(text);
-
-  // 构建 _searchText（w + c + p，lowercase）
-  els.loadingText.textContent = "正在构建搜索索引...";
   els.loadingBar.style.width = "70%";
-  for (const item of state.index) {
-    item._searchText = `${item.w} ${item.c} ${item.p}`.toLowerCase();
-  }
+  const blob = new Blob(chunks);
+  const rawText = await blob.text();
+
+  // 解析并构建 _searchText
+  els.loadingText.textContent = "正在构建搜索索引...";
   els.loadingBar.style.width = "80%";
+  const index = parseAndBuildIndex(rawText);
+  els.loadingBar.style.width = "90%";
+
+  // 缓存到 IndexedDB（异步，不阻塞）
+  try {
+    const db = await openDB();
+    await putCachedIndex(db, version, rawText, index.length);
+    db.close();
+    console.log(`索引已缓存到 IndexedDB (v${version}, ${index.length.toLocaleString()} 条)`);
+  } catch (e) {
+    console.warn("索引缓存到 IndexedDB 失败:", e);
+  }
+
+  return index;
+}
+
+/**
+ * 从 IndexedDB 加载缓存的搜索索引。
+ * 返回解析好的 index 数组，或 null。
+ */
+async function loadSearchIndexFromCache() {
+  try {
+    const db = await openDB();
+    const cached = await getCachedIndex(db);
+    db.close();
+    if (!cached) return null;
+    console.log(`从 IndexedDB 加载索引 (v${cached.version}, ${cached.count.toLocaleString()} 条)`);
+    return parseAndBuildIndex(cached.raw);
+  } catch (e) {
+    console.warn("从 IndexedDB 加载索引失败:", e);
+    return null;
+  }
+}
+
+/**
+ * 后台检查索引是否有更新，如有则更新缓存。
+ */
+async function checkForIndexUpdate(currentVersion) {
+  try {
+    const resp = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
+    if (!resp.ok) return;
+    const info = await resp.json();
+    if (info.v && info.v !== currentVersion) {
+      console.log(`索引有新版本: ${info.v}（当前: ${currentVersion}），后台更新中...`);
+      const db = await openDB();
+      await loadSearchIndexFromNetwork(info.v);
+      db.close();
+    }
+  } catch (e) {
+    // 静默失败
+  }
 }
 
 async function loadManifest() {
@@ -777,31 +883,134 @@ async function init() {
 
 async function startLoading() {
   try {
-    // 加载 manifest（先展示统计）
-    els.loadingText.textContent = "正在加载作品清单...";
-    els.loadingBar.style.width = "5%";
-    await loadManifest();
-    renderLibrary();
+    // Step 1: 并行加载 manifest + 检查索引版本
+    els.loadingText.textContent = "正在检查缓存...";
+    els.loadingBar.style.width = "3%";
 
-    // 加载搜索索引
-    await loadSearchIndex();
+    // 加载 manifest（小文件，很快）
+    const manifestPromise = loadManifest();
+
+    // 获取服务器端索引版本（< 100 字节，极快）
+    let serverVersion = null;
+    try {
+      const vResp = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
+      if (vResp.ok) {
+        const vInfo = await vResp.json();
+        serverVersion = vInfo.v;
+      }
+    } catch (e) {
+      console.warn("无法获取索引版本信息:", e);
+    }
+
+    await manifestPromise;
+    renderLibrary();
+    els.loadingBar.style.width = "8%";
+
+    // Step 2: 尝试从 IndexedDB 缓存加载索引
+    let cachedVersion = null;
+    const cachedIndex = await loadSearchIndexFromCache();
+
+    if (cachedIndex && serverVersion) {
+      // 检查版本是否匹配
+      try {
+        const db = await openDB();
+        const cached = await getCachedIndex(db);
+        db.close();
+        if (cached) cachedVersion = cached.version;
+      } catch (e) { /* ignore */ }
+    }
+
+    if (cachedIndex && cachedVersion === serverVersion) {
+      // ✅ 缓存命中且版本匹配 — 秒开！
+      state.index = cachedIndex;
+      els.loadingBar.style.width = "100%";
+      els.loadingText.textContent =
+        `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
+      els.loadingBar.parentElement.classList.add("done");
+
+      setTimeout(() => {
+        els.loadingOverlay.style.display = "none";
+      }, 300);
+
+      // 自动搜索 URL 参数
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get("q");
+      if (q) {
+        els.queryInput.value = q;
+        await runSearch();
+      }
+      return;
+    }
+
+    if (cachedIndex) {
+      // 缓存存在但版本过期 — 先用缓存，后台更新
+      console.log(`索引版本过期（缓存: ${cachedVersion}, 服务器: ${serverVersion}），先用缓存，后台更新`);
+      state.index = cachedIndex;
+      els.loadingBar.style.width = "100%";
+      els.loadingText.textContent =
+        `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
+      els.loadingBar.parentElement.classList.add("done");
+
+      setTimeout(() => {
+        els.loadingOverlay.style.display = "none";
+      }, 300);
+
+      // 后台下载新版本
+      if (serverVersion) {
+        checkForIndexUpdate(cachedVersion).catch(() => {});
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const q = params.get("q");
+      if (q) {
+        els.queryInput.value = q;
+        await runSearch();
+      }
+      return;
+    }
+
+    // Step 3: 无缓存 — 从网络下载（首次访问）
+    els.loadingText.textContent = "首次使用，正在下载搜索索引...";
+    els.loadingBar.style.width = "10%";
+
+    const version = serverVersion || "unknown";
+    state.index = await loadSearchIndexFromNetwork(version);
 
     // 完成
     els.loadingBar.style.width = "100%";
-    els.loadingText.textContent = `已就绪 — ${state.index.length.toLocaleString()} 个检索片段`;
+    els.loadingText.textContent =
+      `已就绪 — ${state.index.length.toLocaleString()} 个检索片段`;
     els.loadingBar.parentElement.classList.add("done");
 
     setTimeout(() => {
       els.loadingOverlay.style.display = "none";
     }, 600);
 
-    // 如果有 URL 参数，自动搜索
+    // 自动搜索 URL 参数
     const params = new URLSearchParams(window.location.search);
     const q = params.get("q");
     if (q) {
+      els.queryInput.value = q;
       await runSearch();
     }
   } catch (err) {
+    // 如果网络失败但 IndexedDB 有旧缓存，仍可使用
+    try {
+      const fallback = await loadSearchIndexFromCache();
+      if (fallback) {
+        state.index = fallback;
+        els.loadingBar.style.width = "100%";
+        els.loadingText.textContent =
+          `已就绪（离线缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
+        els.loadingBar.parentElement.classList.add("done");
+        setTimeout(() => {
+          els.loadingOverlay.style.display = "none";
+        }, 300);
+        console.warn("网络加载失败，使用 IndexedDB 离线缓存");
+        return;
+      }
+    } catch (e2) { /* ignore */ }
+
     els.loadingText.textContent = `加载失败：${err.message}`;
     els.loadingBar.parentElement.classList.add("error");
     console.error("初始化失败:", err);
