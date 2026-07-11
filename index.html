@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>南怀瑾著作 RAG 检索</title>
+    <meta name="description" content="南怀瑾先生著作全文检索与 AI 问答系统，基于原著片段提供有据可查的回答。" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- 版权声明弹窗 -->
+    <div id="copyrightGate" class="gate-overlay" style="display:none">
+      <div class="gate-modal">
+        <h2>版权声明</h2>
+        <div class="gate-text">
+          <p>本网站收录了南怀瑾先生的著作内容，受版权保护。</p>
+          <p>使用本工具即表示您承诺：</p>
+          <ul>
+            <li>仅用于<strong>个人学习研究</strong></li>
+            <li>不进行商业使用或公开传播</li>
+            <li>尊重原作者及权利人的合法权益</li>
+          </ul>
+          <p class="gate-warn">如果您没有合法获取南怀瑾先生著作的权限，请关闭此页面。</p>
+        </div>
+        <button id="acceptGate" class="gate-button">我已了解，开始使用</button>
+      </div>
+    </div>
+
+    <!-- 加载进度 -->
+    <div id="loadingOverlay" class="loading-overlay">
+      <div class="loading-card">
+        <h2>南怀瑾著作 RAG 检索</h2>
+        <p id="loadingText">正在初始化...</p>
+        <div class="progress-track">
+          <div id="loadingBar" class="progress-fill" style="width:0%"></div>
+        </div>
+        <p class="loading-hint">首次加载需下载搜索索引（约 12 MB），后续访问将使用浏览器缓存</p>
+      </div>
+    </div>
+
+    <main class="shell">
+      <!-- 侧边栏 -->
+      <section class="sidebar" aria-label="资料库">
+        <header class="brand">
+          <h1>南怀瑾著作 RAG</h1>
+          <p>原著检索 · 证据约束 · AI 辅助回答</p>
+        </header>
+
+        <!-- API 设置 -->
+        <div class="panel api-panel">
+          <details>
+            <summary class="panel-summary">AI 回答设置</summary>
+            <div class="api-config">
+              <label for="apiKeyInput">DeepSeek API Key</label>
+              <div class="api-key-row">
+                <input id="apiKeyInput" type="password" placeholder="sk-..." />
+                <button id="saveApiKey" type="button">保存</button>
+              </div>
+              <p id="apiStatus" class="api-status"></p>
+              <p class="api-hint">
+                密钥仅存于本地浏览器。每千次查询约 ¥4。
+                <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">获取 Key →</a>
+              </p>
+            </div>
+          </details>
+        </div>
+
+        <!-- 资料库统计 -->
+        <div class="panel">
+          <div class="panel-title">
+            <h2>资料库</h2>
+            <span id="libraryStats">加载中...</span>
+          </div>
+          <div id="libraryList" class="library-list">
+            <div class="empty">正在加载...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 主工作区 -->
+      <section class="workspace" aria-label="检索工作区">
+        <!-- 搜索栏 -->
+        <div class="search-card">
+          <label for="queryInput">问题或关键词</label>
+          <div class="search-row">
+            <input id="queryInput" type="search" placeholder="例如：南怀瑾如何理解"安那般那"？什么是"十六特胜"？" />
+            <button id="searchButton" type="button">检索</button>
+          </div>
+          <div class="controls">
+            <label>
+              返回片段
+              <input id="topK" type="number" min="3" max="20" step="1" value="8" />
+            </label>
+            <label>
+              最低分数
+              <input id="minScore" type="number" min="0" max="1" step="0.01" value="0.08" />
+            </label>
+            <label class="toggle">
+              <input id="strictMode" type="checkbox" checked />
+              严格出处模式
+            </label>
+          </div>
+        </div>
+
+        <!-- 回答面板 -->
+        <section class="answer-panel" aria-label="回答">
+          <div class="answer-head">
+            <div>
+              <h2>回答</h2>
+              <p id="answerStatus">输入问题后开始检索。</p>
+            </div>
+            <div class="answer-actions">
+              <button id="aiAnswerBtn" type="button" class="primary">AI 回答</button>
+              <button id="copyPrompt" type="button">复制提示词</button>
+            </div>
+          </div>
+          <div id="answerBox" class="answer-box">
+            <p>检索结果将在此显示。点击"AI 回答"基于原文片段生成回答（需 API Key），或点击"复制提示词"手动粘贴到任意 LLM。</p>
+          </div>
+        </section>
+
+        <!-- 检索结果 -->
+        <section class="results-wrap" aria-label="检索结果">
+          <div class="section-head">
+            <h2>原文片段</h2>
+            <span id="resultCount">0 条</span>
+          </div>
+          <div id="results" class="results"></div>
+        </section>
+      </section>
+    </main>
+
+    <!-- 模板 -->
+    <template id="docTemplate">
+      <article class="doc-item">
+        <h3></h3>
+        <p></p>
+      </article>
+    </template>
+
+    <template id="resultTemplate">
+      <article class="result-card">
+        <div class="result-meta">
+          <strong class="result-work"></strong>
+          <span class="result-chapter"></span>
+        </div>
+        <div class="result-meta-secondary">
+          <span class="result-score"></span>
+          <a class="result-source" href="#" target="_blank" rel="noopener">原文链接</a>
+        </div>
+        <p class="snippet"></p>
+        <details style="display:none">
+          <summary>查看完整片段</summary>
+          <pre></pre>
+        </details>
+      </article>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

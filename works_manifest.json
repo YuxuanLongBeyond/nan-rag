@@ -1,0 +1,587 @@
+{
+  "论语别裁": {
+    "file": "corpus/论语别裁.json",
+    "chunks": 1680,
+    "size": 2170055
+  },
+  "话说中庸": {
+    "file": "corpus/话说中庸.json",
+    "chunks": 549,
+    "size": 742137
+  },
+  "原本大学微言": {
+    "file": "corpus/原本大学微言.json",
+    "chunks": 996,
+    "size": 1323190
+  },
+  "孟子与滕文公、告子": {
+    "file": "corpus/孟子与滕文公、告子.json",
+    "chunks": 362,
+    "size": 469633
+  },
+  "孟子与尽心篇": {
+    "file": "corpus/孟子与尽心篇.json",
+    "chunks": 404,
+    "size": 516882
+  },
+  "孟子与离娄": {
+    "file": "corpus/孟子与离娄.json",
+    "chunks": 561,
+    "size": 709240
+  },
+  "孟子旁通": {
+    "file": "corpus/孟子旁通.json",
+    "chunks": 599,
+    "size": 772134
+  },
+  "孟子与公孙丑": {
+    "file": "corpus/孟子与公孙丑.json",
+    "chunks": 459,
+    "size": 590474
+  },
+  "孟子与万章": {
+    "file": "corpus/孟子与万章.json",
+    "chunks": 204,
+    "size": 262545
+  },
+  "易经杂说": {
+    "file": "corpus/易经杂说.json",
+    "chunks": 470,
+    "size": 584604
+  },
+  "易经系传别讲": {
+    "file": "corpus/易经系传别讲.json",
+    "chunks": 730,
+    "size": 903107
+  },
+  "中国文化泛言": {
+    "file": "corpus/中国文化泛言.json",
+    "chunks": 449,
+    "size": 608974
+  },
+  "历史的经验": {
+    "file": "corpus/历史的经验.json",
+    "chunks": 426,
+    "size": 574612
+  },
+  "亦新亦旧的一代": {
+    "file": "corpus/亦新亦旧的一代.json",
+    "chunks": 253,
+    "size": 349685
+  },
+  "老子他说(上下)": {
+    "file": "corpus/老子他说(上下).json",
+    "chunks": 1028,
+    "size": 1300914
+  },
+  "庄子諵譁(2017年)": {
+    "file": "corpus/庄子諵譁(2017年).json",
+    "chunks": 1247,
+    "size": 1582812
+  },
+  "庄子讲记(内第一篇)": {
+    "file": "corpus/庄子讲记(内第一篇).json",
+    "chunks": 104,
+    "size": 135675
+  },
+  "庄子讲记(全内七篇)": {
+    "file": "corpus/庄子讲记(全内七篇).json",
+    "chunks": 1113,
+    "size": 1479433
+  },
+  "列子臆说": {
+    "file": "corpus/列子臆说.json",
+    "chunks": 1566,
+    "size": 1999267
+  },
+  "我说参同契": {
+    "file": "corpus/我说参同契.json",
+    "chunks": 1376,
+    "size": 1690276
+  },
+  "太极拳与道功": {
+    "file": "corpus/太极拳与道功.json",
+    "chunks": 44,
+    "size": 56446
+  },
+  "静坐修道与长生不老": {
+    "file": "corpus/静坐修道与长生不老.json",
+    "chunks": 226,
+    "size": 303350
+  },
+  "小言黄帝内经与生命科学": {
+    "file": "corpus/小言黄帝内经与生命科学.json",
+    "chunks": 272,
+    "size": 347379
+  },
+  "庄子外篇": {
+    "file": "corpus/庄子外篇.json",
+    "chunks": 264,
+    "size": 344512
+  },
+  "《观无量寿经》大意": {
+    "file": "corpus/《观无量寿经》大意.json",
+    "chunks": 40,
+    "size": 52529
+  },
+  "南师《心经》解读": {
+    "file": "corpus/南师《心经》解读.json",
+    "chunks": 28,
+    "size": 37803
+  },
+  "《药师经》的济世观": {
+    "file": "corpus/《药师经》的济世观.json",
+    "chunks": 462,
+    "size": 600537
+  },
+  "《金刚经》说什么": {
+    "file": "corpus/《金刚经》说什么.json",
+    "chunks": 646,
+    "size": 821696
+  },
+  "《楞严》大义今释": {
+    "file": "corpus/《楞严》大义今释.json",
+    "chunks": 429,
+    "size": 615350
+  },
+  "《圆觉经》略说": {
+    "file": "corpus/《圆觉经》略说.json",
+    "chunks": 530,
+    "size": 697082
+  },
+  "《楞伽》大义今释": {
+    "file": "corpus/《楞伽》大义今释.json",
+    "chunks": 561,
+    "size": 758767
+  },
+  "《维摩诘经》讲记": {
+    "file": "corpus/《维摩诘经》讲记.json",
+    "chunks": 1590,
+    "size": 2102258
+  },
+  "《维摩》精舍丛书": {
+    "file": "corpus/《维摩》精舍丛书.json",
+    "chunks": 313,
+    "size": 414244
+  },
+  "南《瑜伽师地论》": {
+    "file": "corpus/南《瑜伽师地论》.json",
+    "chunks": 1335,
+    "size": 1801145
+  },
+  "《宗镜录》略讲": {
+    "file": "corpus/《宗镜录》略讲.json",
+    "chunks": 1892,
+    "size": 2525304
+  },
+  "《毗耶娑问经》讲记": {
+    "file": "corpus/《毗耶娑问经》讲记.json",
+    "chunks": 249,
+    "size": 333531
+  },
+  "《佛说入胎经》今释": {
+    "file": "corpus/《佛说入胎经》今释.json",
+    "chunks": 149,
+    "size": 205117
+  },
+  "《戒律学原理》摭言": {
+    "file": "corpus/《戒律学原理》摭言.json",
+    "chunks": 18,
+    "size": 25636
+  },
+  "《楞严经》讲习录": {
+    "file": "corpus/《楞严经》讲习录.json",
+    "chunks": 5340,
+    "size": 7550815
+  },
+  "生命科学研究": {
+    "file": "corpus/生命科学研究.json",
+    "chunks": 3117,
+    "size": 4243493
+  },
+  "南师讲《指月录》": {
+    "file": "corpus/南师讲《指月录》.json",
+    "chunks": 833,
+    "size": 1173039
+  },
+  "《达摩多罗禅经》讲记": {
+    "file": "corpus/《达摩多罗禅经》讲记.json",
+    "chunks": 1580,
+    "size": 2195323
+  },
+  "《信心铭》讲记": {
+    "file": "corpus/《信心铭》讲记.json",
+    "chunks": 79,
+    "size": 107622
+  },
+  "《大乘显识经》讲记": {
+    "file": "corpus/《大乘显识经》讲记.json",
+    "chunks": 494,
+    "size": 649210
+  },
+  "唯识与中观(2006版)": {
+    "file": "corpus/唯识与中观(2006版).json",
+    "chunks": 2155,
+    "size": 2963184
+  },
+  "唯识与中观(2019版)": {
+    "file": "corpus/唯识与中观(2019版).json",
+    "chunks": 6792,
+    "size": 9161516
+  },
+  "学佛者的基本信念": {
+    "file": "corpus/学佛者的基本信念.json",
+    "chunks": 217,
+    "size": 283052
+  },
+  "如何修证佛法": {
+    "file": "corpus/如何修证佛法.json",
+    "chunks": 726,
+    "size": 985552
+  },
+  "念佛如何得到一心不乱": {
+    "file": "corpus/念佛如何得到一心不乱.json",
+    "chunks": 35,
+    "size": 45152
+  },
+  "禅观正脉研究(白骨观)": {
+    "file": "corpus/禅观正脉研究(白骨观).json",
+    "chunks": 116,
+    "size": 153164
+  },
+  "观想白骨与般若的关系": {
+    "file": "corpus/观想白骨与般若的关系.json",
+    "chunks": 15,
+    "size": 21862
+  },
+  "参禅切忌从他觅": {
+    "file": "corpus/参禅切忌从他觅.json",
+    "chunks": 9,
+    "size": 13539
+  },
+  "定慧初修": {
+    "file": "corpus/定慧初修.json",
+    "chunks": 318,
+    "size": 412551
+  },
+  "禅海蠡测": {
+    "file": "corpus/禅海蠡测.json",
+    "chunks": 388,
+    "size": 530246
+  },
+  "参禅日记": {
+    "file": "corpus/参禅日记.json",
+    "chunks": 678,
+    "size": 909425
+  },
+  "照明三昧": {
+    "file": "corpus/照明三昧.json",
+    "chunks": 24,
+    "size": 32483
+  },
+  "南禅七日": {
+    "file": "corpus/南禅七日.json",
+    "chunks": 1017,
+    "size": 1556954
+  },
+  "习禅录影": {
+    "file": "corpus/习禅录影.json",
+    "chunks": 871,
+    "size": 1186310
+  },
+  "修行初步": {
+    "file": "corpus/修行初步.json",
+    "chunks": 14,
+    "size": 18582
+  },
+  "神通妙用": {
+    "file": "corpus/神通妙用.json",
+    "chunks": 32,
+    "size": 43957
+  },
+  "南师所讲呼吸法门精要": {
+    "file": "corpus/南师所讲呼吸法门精要.json",
+    "chunks": 81,
+    "size": 102458
+  },
+  "《禅秘要法》讲座": {
+    "file": "corpus/《禅秘要法》讲座.json",
+    "chunks": 614,
+    "size": 847255
+  },
+  "实修《大安般守意经》": {
+    "file": "corpus/实修《大安般守意经》.json",
+    "chunks": 40,
+    "size": 55514
+  },
+  "现代学佛者修证对话": {
+    "file": "corpus/现代学佛者修证对话.json",
+    "chunks": 521,
+    "size": 732105
+  },
+  "如何静坐问答录": {
+    "file": "corpus/如何静坐问答录.json",
+    "chunks": 27,
+    "size": 38963
+  },
+  "观音法门（略讲）": {
+    "file": "corpus/观音法门（略讲）.json",
+    "chunks": 38,
+    "size": 50409
+  },
+  "略释观音法门": {
+    "file": "corpus/略释观音法门.json",
+    "chunks": 19,
+    "size": 24974
+  },
+  "观音菩萨与观音法门": {
+    "file": "corpus/观音菩萨与观音法门.json",
+    "chunks": 47,
+    "size": 62152
+  },
+  "神通与特异功能": {
+    "file": "corpus/神通与特异功能.json",
+    "chunks": 34,
+    "size": 44133
+  },
+  "准提法修持要领": {
+    "file": "corpus/准提法修持要领.json",
+    "chunks": 60,
+    "size": 82448
+  },
+  "准提菩萨圣诞开示": {
+    "file": "corpus/准提菩萨圣诞开示.json",
+    "chunks": 48,
+    "size": 65505
+  },
+  "准提法修持仪轨简要": {
+    "file": "corpus/准提法修持仪轨简要.json",
+    "chunks": 3,
+    "size": 4438
+  },
+  "禅宗的观心法门": {
+    "file": "corpus/禅宗的观心法门.json",
+    "chunks": 15,
+    "size": 20558
+  },
+  "谈随息法与三际托空": {
+    "file": "corpus/谈随息法与三际托空.json",
+    "chunks": 28,
+    "size": 39965
+  },
+  "1997夏之禅": {
+    "file": "corpus/1997夏之禅.json",
+    "chunks": 302,
+    "size": 401787
+  },
+  "传统身心性命修行的探讨": {
+    "file": "corpus/传统身心性命修行的探讨.json",
+    "chunks": 1372,
+    "size": 1899534
+  },
+  "2009年太湖大学堂禅修实录": {
+    "file": "corpus/2009年太湖大学堂禅修实录.json",
+    "chunks": 705,
+    "size": 953598
+  },
+  "2007年新正禅七之开示": {
+    "file": "corpus/2007年新正禅七之开示.json",
+    "chunks": 333,
+    "size": 453560
+  },
+  "2004七都君庐珍贵开示": {
+    "file": "corpus/2004七都君庐珍贵开示.json",
+    "chunks": 185,
+    "size": 265031
+  },
+  "禅宗六祖与中国理学": {
+    "file": "corpus/禅宗六祖与中国理学.json",
+    "chunks": 63,
+    "size": 82969
+  },
+  "道家密宗与东方神秘学": {
+    "file": "corpus/道家密宗与东方神秘学.json",
+    "chunks": 367,
+    "size": 524882
+  },
+  "大会计": {
+    "file": "corpus/大会计.json",
+    "chunks": 83,
+    "size": 105530
+  },
+  "禅宗与道家": {
+    "file": "corpus/禅宗与道家.json",
+    "chunks": 593,
+    "size": 874600
+  },
+  "禅话": {
+    "file": "corpus/禅话.json",
+    "chunks": 137,
+    "size": 168844
+  },
+  "中国式管理": {
+    "file": "corpus/中国式管理.json",
+    "chunks": 1,
+    "size": 889
+  },
+  "中国佛教发展史略": {
+    "file": "corpus/中国佛教发展史略.json",
+    "chunks": 286,
+    "size": 386826
+  },
+  "中国道教发展史略": {
+    "file": "corpus/中国道教发展史略.json",
+    "chunks": 123,
+    "size": 165154
+  },
+  "国学与中国文化": {
+    "file": "corpus/国学与中国文化.json",
+    "chunks": 111,
+    "size": 142017
+  },
+  "般若正观略讲": {
+    "file": "corpus/般若正观略讲.json",
+    "chunks": 66,
+    "size": 86458
+  },
+  "二十一世纪初的前言后语": {
+    "file": "corpus/二十一世纪初的前言后语.json",
+    "chunks": 684,
+    "size": 892610
+  },
+  "人性的真相": {
+    "file": "corpus/人性的真相.json",
+    "chunks": 7,
+    "size": 10298
+  },
+  "中国传统文化与大众传播": {
+    "file": "corpus/中国传统文化与大众传播.json",
+    "chunks": 49,
+    "size": 65600
+  },
+  "佛教的布施学": {
+    "file": "corpus/佛教的布施学.json",
+    "chunks": 51,
+    "size": 71051
+  },
+  "致答日本朋友的一封公开信": {
+    "file": "corpus/致答日本朋友的一封公开信.json",
+    "chunks": 63,
+    "size": 110582
+  },
+  "观音菩萨的慈悲与人类文化的关系": {
+    "file": "corpus/观音菩萨的慈悲与人类文化的关系.json",
+    "chunks": 7,
+    "size": 10291
+  },
+  "中庸讲记（录音整理）": {
+    "file": "corpus/中庸讲记（录音整理）.json",
+    "chunks": 591,
+    "size": 819302
+  },
+  "楞严经讲座（录音整理）": {
+    "file": "corpus/楞严经讲座（录音整理）.json",
+    "chunks": 3523,
+    "size": 4872662
+  },
+  "禅秘要法（录音整理）": {
+    "file": "corpus/禅秘要法（录音整理）.json",
+    "chunks": 781,
+    "size": 1072715
+  },
+  "答问青壮年参禅者": {
+    "file": "corpus/答问青壮年参禅者.json",
+    "chunks": 23,
+    "size": 31296
+  },
+  "漫谈中国文化": {
+    "file": "corpus/漫谈中国文化.json",
+    "chunks": 36,
+    "size": 48859
+  },
+  "南怀瑾老师诗词选辑": {
+    "file": "corpus/南怀瑾老师诗词选辑.json",
+    "chunks": 430,
+    "size": 497728
+  },
+  "南怀瑾先生著作诗词": {
+    "file": "corpus/南怀瑾先生著作诗词.json",
+    "chunks": 48,
+    "size": 70842
+  },
+  "维摩诘的花雨满天": {
+    "file": "corpus/维摩诘的花雨满天.json",
+    "chunks": 1243,
+    "size": 2302962
+  },
+  "瑜伽师地论讲座": {
+    "file": "corpus/瑜伽师地论讲座.json",
+    "chunks": 75,
+    "size": 138331
+  },
+  "宗镜录略讲（guoxue版）": {
+    "file": "corpus/宗镜录略讲（guoxue版）.json",
+    "chunks": 1478,
+    "size": 2718311
+  },
+  "中国文化与佛学八讲": {
+    "file": "corpus/中国文化与佛学八讲.json",
+    "chunks": 72,
+    "size": 130168
+  },
+  "人生的起点和终站": {
+    "file": "corpus/人生的起点和终站.json",
+    "chunks": 86,
+    "size": 150557
+  },
+  "太湖楞严讲习录": {
+    "file": "corpus/太湖楞严讲习录.json",
+    "chunks": 5564,
+    "size": 8084223
+  },
+  "南师2002年准提法开示录": {
+    "file": "corpus/南师2002年准提法开示录.json",
+    "chunks": 32,
+    "size": 45750
+  },
+  "南公上师1997年再传准提法于香港（上）": {
+    "file": "corpus/南公上师1997年再传准提法于香港（上）.json",
+    "chunks": 20,
+    "size": 28472
+  },
+  "南公上师1997年再传准提法于香港（下）": {
+    "file": "corpus/南公上师1997年再传准提法于香港（下）.json",
+    "chunks": 16,
+    "size": 22909
+  },
+  "南师1985年亲领准提法共修开示": {
+    "file": "corpus/南师1985年亲领准提法共修开示.json",
+    "chunks": 69,
+    "size": 98011
+  },
+  "融通白骨禅观与准提法的修持": {
+    "file": "corpus/融通白骨禅观与准提法的修持.json",
+    "chunks": 38,
+    "size": 55701
+  },
+  "殊胜的准提佛母修法": {
+    "file": "corpus/殊胜的准提佛母修法.json",
+    "chunks": 19,
+    "size": 25531
+  },
+  "南公准提法已经透露的内密": {
+    "file": "corpus/南公准提法已经透露的内密.json",
+    "chunks": 15,
+    "size": 22169
+  },
+  "南师开示：宁可执有如须弥山不可落空如芥子许": {
+    "file": "corpus/南师开示：宁可执有如须弥山不可落空如芥子许.json",
+    "chunks": 8,
+    "size": 11241
+  },
+  "太湖版《达摩多罗禅经》讲座": {
+    "file": "corpus/太湖版《达摩多罗禅经》讲座.json",
+    "chunks": 1788,
+    "size": 2788521
+  }
+}

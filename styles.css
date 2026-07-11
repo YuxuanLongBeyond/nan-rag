@@ -1,0 +1,403 @@
+/* ═══════════════════════════════════════════════════════════
+   南怀瑾著作 RAG 检索系统 — 样式
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: light;
+  --ink: #1e2528;
+  --muted: #657177;
+  --line: #d9dedb;
+  --paper: #f7f7f4;
+  --panel: #ffffff;
+  --accent: #1f6f63;
+  --accent-dark: #155047;
+  --danger: #a13e32;
+  --mark: #fff0a6;
+  --sidebar-bg: #eef1ed;
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  line-height: 1.6;
+}
+
+button, input { font: inherit; }
+
+button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  min-height: 38px;
+  padding: 0 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover { border-color: var(--accent); color: var(--accent-dark); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+button.primary:hover { background: var(--accent-dark); }
+button.danger { color: var(--danger); }
+
+a { color: var(--accent-dark); }
+
+/* ── 版权弹窗 ──────────────────────────────────── */
+.gate-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10000;
+  padding: 20px;
+}
+.gate-modal {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 32px;
+  max-width: 520px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.gate-modal h2 {
+  margin: 0 0 16px;
+  font-size: 22px;
+  color: var(--accent-dark);
+}
+.gate-text { font-size: 14px; line-height: 1.8; color: var(--muted); }
+.gate-text p { margin: 0 0 10px; }
+.gate-text ul { margin: 8px 0; padding-left: 20px; }
+.gate-text li { margin-bottom: 4px; }
+.gate-warn { color: var(--danger) !important; font-weight: 600; }
+.gate-button {
+  display: block; width: 100%; margin-top: 20px;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 8px; padding: 12px; font-size: 16px; font-weight: 700;
+  cursor: pointer;
+}
+.gate-button:hover { background: var(--accent-dark); }
+
+/* ── 加载进度 ──────────────────────────────────── */
+.loading-overlay {
+  position: fixed; inset: 0;
+  background: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+  padding: 20px;
+}
+.loading-card {
+  text-align: center;
+  max-width: 440px;
+  width: 100%;
+}
+.loading-card h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  color: var(--accent-dark);
+}
+.loading-card > p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.progress-track {
+  height: 8px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+.progress-track.done .progress-fill { background: #2eaa7b; }
+.progress-track.error .progress-fill { background: var(--danger); }
+.loading-hint {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+/* ── 布局 ──────────────────────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  min-height: 100vh;
+}
+.sidebar {
+  border-right: 1px solid var(--line);
+  background: var(--sidebar-bg);
+  padding: 24px;
+  overflow: auto;
+  max-height: 100vh;
+  position: sticky;
+  top: 0;
+}
+.workspace {
+  padding: 28px;
+  overflow: auto;
+}
+
+/* ── 品牌 ──────────────────────────────────────── */
+.brand h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+  color: var(--accent-dark);
+}
+.brand p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ── 面板 ──────────────────────────────────────── */
+.panel, .search-card, .answer-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.panel {
+  margin-top: 16px;
+  padding: 16px;
+}
+.panel-title {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.panel-title h2 { margin: 0; font-size: 16px; }
+.panel-title span { color: var(--muted); font-size: 13px; }
+
+/* ── API 设置面板 ──────────────────────────────── */
+.panel-summary {
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  color: var(--ink);
+  list-style-position: outside;
+  margin: -16px;
+  padding: 16px;
+}
+.panel-summary:hover { color: var(--accent-dark); }
+.api-config { margin-top: 14px; }
+.api-config label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.api-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.api-key-row input {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #fbfcfa;
+  font-size: 13px;
+}
+.api-key-row button {
+  min-height: 38px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.api-status {
+  font-size: 12px;
+  color: var(--accent);
+  margin: 6px 0;
+}
+.api-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+
+/* ── 资料库列表 ────────────────────────────────── */
+.library-list { display: grid; gap: 8px; }
+.doc-item {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fbfcfa;
+}
+.doc-item h3 { margin: 0; font-size: 14px; line-height: 1.35; }
+.doc-item p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  background: #fbfcfa;
+  font-size: 13px;
+}
+
+/* ── 搜索 ──────────────────────────────────────── */
+.search-card { padding: 18px; }
+.search-card > label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 10px;
+  font-size: 15px;
+}
+.search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.search-row input {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 14px;
+  background: #fbfcfa;
+  font-size: 15px;
+}
+.search-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31,111,99,0.12);
+}
+.search-row button {
+  min-height: 44px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 15px;
+  padding: 0 20px;
+}
+.controls {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  margin-top: 14px; color: var(--muted); font-size: 13px;
+}
+.controls label { display: flex; align-items: center; gap: 6px; }
+.controls input[type="number"] {
+  width: 64px; min-height: 32px;
+  border: 1px solid var(--line); border-radius: 6px; padding: 0 8px;
+}
+.toggle input { width: 15px; height: 15px; }
+
+/* ── 回答面板 ──────────────────────────────────── */
+.answer-panel { margin-top: 18px; padding: 18px; }
+.answer-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap;
+}
+.answer-head h2 { margin: 0; font-size: 17px; }
+.answer-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.answer-actions { display: flex; gap: 8px; }
+.answer-box {
+  margin-top: 14px; line-height: 1.8;
+  border-top: 1px solid var(--line); padding-top: 14px;
+  font-size: 15px;
+}
+.answer-box p { margin: 0 0 8px; }
+.answer-box ol { margin: 8px 0; padding-left: 20px; }
+.answer-box li { margin-bottom: 4px; }
+
+/* AI 流式输出 */
+.streaming { color: var(--ink); }
+.cursor {
+  display: inline;
+  animation: blink 0.7s step-end infinite;
+  color: var(--accent);
+}
+@keyframes blink { 50% { opacity: 0; } }
+.ai-answer { line-height: 1.85; }
+.ai-answer .cite { color: var(--accent); font-weight: 600; font-size: 0.85em; }
+.error-msg { color: var(--danger); font-weight: 600; }
+
+/* ── 结果列表 ──────────────────────────────────── */
+.results-wrap { margin-top: 22px; }
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.section-head h2 { margin: 0; font-size: 17px; }
+.section-head span { color: var(--muted); font-size: 13px; }
+.results { display: grid; gap: 14px; margin-top: 12px; }
+
+.result-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+}
+.result-meta {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin-bottom: 6px;
+}
+.result-work {
+  font-size: 15px;
+  color: var(--accent-dark);
+}
+.result-chapter {
+  font-size: 13px;
+  color: var(--muted);
+}
+.result-meta-secondary {
+  display: flex; gap: 12px; align-items: center;
+  margin-bottom: 10px;
+  font-size: 12px; color: var(--muted);
+}
+.result-source {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 12px;
+}
+.result-source:hover { text-decoration: underline; }
+.snippet {
+  line-height: 1.8; margin: 0; font-size: 14px;
+}
+mark {
+  background: var(--mark); padding: 0 2px; border-radius: 1px;
+}
+details { margin-top: 12px; }
+summary {
+  cursor: pointer; color: var(--accent-dark); font-weight: 600;
+  font-size: 13px;
+}
+pre {
+  white-space: pre-wrap; word-break: break-word;
+  background: #f4f6f3; border: 1px solid var(--line);
+  border-radius: 6px; padding: 12px; line-height: 1.8;
+  font-size: 14px; max-height: 400px; overflow: auto;
+}
+
+/* ── 响应式 ────────────────────────────────────── */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar {
+    border-right: 0; border-bottom: 1px solid var(--line);
+    max-height: none; position: static;
+    padding: 18px;
+  }
+  .workspace { padding: 16px; }
+  .search-row { grid-template-columns: 1fr; }
+  .brand h1 { font-size: 18px; }
+  .answer-actions { width: 100%; }
+  .answer-actions button { flex: 1; }
+  .controls { gap: 10px; }
+  .gate-modal { padding: 20px; margin: 12px; }
+  .gate-modal h2 { font-size: 18px; }
+}
