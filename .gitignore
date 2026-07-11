@@ -2,18 +2,8 @@
 __pycache__/
 *.pyc
 
-# Raw intermediate data (redundant with corpus/)
-rag/nanhuaijin_documents.jsonl
-rag/nanhuaijin_chunks.jsonl
-rag/shixiu_documents.jsonl
-rag/shixiu_chunks.jsonl
-rag/guoxue_documents.jsonl
-rag/guoxue_chunks.jsonl
-rag/supplement_documents.jsonl
-rag/supplement_chunks.jsonl
-rag/docx_documents.jsonl
-rag/docx_chunks.jsonl
-rag/*_crawl_errors.jsonl
+# Data pipeline（仅本地使用，不上传）
+rag/
 
 # Source docx files (copyrighted, local only)
 data/
