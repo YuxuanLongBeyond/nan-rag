@@ -1027,7 +1027,7 @@ async function generateAIAnswer(query, results) {
             answerText += delta;
             const rendered = escapeHtml(answerText)
               .replace(/\n/g, "<br>")
-              .replace(/\[(\d+)\]/g, '<a href="#cite-$1" class="cite-link"><sup class="cite">[$1]</sup></a>');
+              .replace(/\[(\d+)\]/g, '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>');
             if (msgDiv) {
               msgDiv.querySelector(".chat-bubble").innerHTML =
                 '<div class="ai-answer">' + rendered +
@@ -1047,7 +1047,7 @@ async function generateAIAnswer(query, results) {
     const finalHtml = '<div class="ai-answer">' +
       answerText
         .replace(/\n/g, "<br>")
-        .replace(/\[(\d+)\]/g, '<a href="#cite-$1" class="cite-link"><sup class="cite">[$1]</sup></a>') +
+        .replace(/\[(\d+)\]/g, '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>') +
       "</div>";
 
     if (msgDiv) {
@@ -1132,7 +1132,7 @@ function buildConservativeAnswer(query, results, strictMode) {
     .slice(0, 5)
     .map((r, i) => {
       const src = `《${r.chunk.w}》${r.chunk.c}（相关度 ${r.score.toFixed(2)}）`;
-      return `<li><a href="#cite-${i + 1}" class="cite-link">[${i + 1}]</a> ${escapeHtml(src)}</li>`;
+      return `<li><span class="cite-link" data-cite="${i + 1}">[${i + 1}]</span> ${escapeHtml(src)}</li>`;
     })
     .join("");
 
@@ -1483,7 +1483,27 @@ async function init() {
     }
   });
 
-  // 4. URL 参数
+  // 4. 引用跳转事件委托
+  document.addEventListener("click", (e) => {
+    const citeLink = e.target.closest(".cite-link");
+    if (!citeLink) return;
+    const citeNum = citeLink.getAttribute("data-cite");
+    if (!citeNum) return;
+    const target = document.getElementById(`cite-${citeNum}`);
+    if (target) {
+      e.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      // 短暂闪烁高亮（如果 :target 不触发）
+      target.style.boxShadow = "0 0 0 4px rgba(31,111,99,0.3)";
+      target.style.borderColor = "var(--accent)";
+      setTimeout(() => {
+        target.style.boxShadow = "";
+        target.style.borderColor = "";
+      }, 1500);
+    }
+  });
+
+  // 5. URL 参数
   const params = new URLSearchParams(window.location.search);
   const q = params.get("q");
   if (q) {
