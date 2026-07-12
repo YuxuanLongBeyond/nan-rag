@@ -97,6 +97,11 @@ function bindEls() {
     copyPrompt: document.getElementById("copyPrompt"),
     newChatBtn: document.getElementById("newChatBtn"),
 
+    // 追问输入栏
+    quickAskBar: document.getElementById("quickAskBar"),
+    quickAskInput: document.getElementById("quickAskInput"),
+    quickAskBtn: document.getElementById("quickAskBtn"),
+
     // 结果
     resultCount: document.getElementById("resultCount"),
     results: document.getElementById("results"),
@@ -1303,6 +1308,9 @@ function updateConversationUI() {
   if (els.newChatBtn) {
     els.newChatBtn.style.display = hasHistory ? "" : "none";
   }
+  if (els.quickAskBar) {
+    els.quickAskBar.style.display = hasHistory ? "flex" : "none";
+  }
 }
 
 // ── 初始化 ────────────────────────────────────────
@@ -1379,6 +1387,53 @@ async function init() {
   // 新对话
   if (els.newChatBtn) {
     els.newChatBtn.addEventListener("click", startNewConversation);
+  }
+
+  // 追问输入栏
+  async function sendFollowUp() {
+    const q = els.quickAskInput.value.trim();
+    if (!q) return;
+    els.quickAskInput.value = "";
+    els.quickAskBtn.disabled = true;
+
+    // 同步到主搜索框
+    els.queryInput.value = q;
+
+    // 执行搜索
+    const topK = parseInt(els.topK.value, 10) || 8;
+    const minScore = parseFloat(els.minScore.value) || 0.08;
+
+    let results;
+    if (state.searchMode === "semantic") {
+      results = await searchSemantic(q, topK, minScore);
+    } else {
+      results = search(q, topK, minScore);
+    }
+    state.lastResults = results;
+
+    // 加载全文
+    const neededWorks = new Set(results.map((r) => r.chunk.w));
+    await Promise.all([...neededWorks].map((w) => loadCorpusForWork(w).catch(() => {})));
+    for (const r of results) {
+      const corpus = state.textCache.get(r.chunk.w);
+      if (corpus) {
+        const entry = corpus.get(r.chunk.id);
+        if (entry) r.text = entry.t;
+      }
+    }
+
+    // 直接调用 AI 回答
+    await generateAIAnswer(q, results);
+    els.quickAskBtn.disabled = false;
+  }
+
+  if (els.quickAskBtn) {
+    els.quickAskBtn.addEventListener("click", sendFollowUp);
+  }
+  if (els.quickAskInput) {
+    els.quickAskInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendFollowUp();
+    });
   }
 
   els.aiAnswerBtn.addEventListener("click", async () => {

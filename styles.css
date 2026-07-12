@@ -375,6 +375,38 @@ a { color: var(--accent-dark); }
 .chat-bubble .cite { color: var(--accent-dark); font-weight: 600; font-size: 0.85em; }
 .chat-bubble .error-msg { color: var(--danger); font-weight: 600; }
 
+/* ── 追问输入栏 ──────────────────────────────────── */
+.quick-ask-bar {
+  display: flex; gap: 8px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--line);
+  position: sticky; bottom: 0;
+  background: var(--panel);
+  margin-top: 8px;
+}
+.quick-ask-bar input {
+  flex: 1; min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 14px;
+  font-size: 14px;
+  background: #fbfcfa;
+}
+.quick-ask-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31,111,99,0.12);
+}
+.quick-ask-bar button {
+  min-height: 40px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  padding: 0 18px;
+}
+.quick-ask-bar button:disabled { opacity: 0.6; }
+
 /* AI 流式输出 */
 .streaming { color: var(--ink); }
 .cursor {
