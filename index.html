@@ -100,6 +100,12 @@
               严格出处模式
             </label>
           </div>
+          <div class="search-modes">
+            <span class="mode-label">搜索模式</span>
+            <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy" checked> 模糊</label>
+            <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
+            <label class="mode-option"><input type="radio" name="searchMode" value="semantic"> 语义</label>
+          </div>
         </div>
 
         <!-- 回答面板 -->
@@ -112,8 +118,10 @@
             <div class="answer-actions">
               <button id="aiAnswerBtn" type="button" class="primary">AI 回答</button>
               <button id="copyPrompt" type="button">复制提示词</button>
+              <button id="newChatBtn" type="button" style="display:none">新对话</button>
             </div>
           </div>
+          <div id="conversationList" class="conversation-list"></div>
           <div id="answerBox" class="answer-box">
             <p>检索结果将在此显示。点击"AI 回答"基于原文片段生成回答（需 API Key），或点击"复制提示词"手动粘贴到任意 LLM。</p>
           </div>
