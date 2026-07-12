@@ -419,11 +419,6 @@
     "chunks": 137,
     "size": 168844
   },
-  "中国式管理": {
-    "file": "corpus/中国式管理.json",
-    "chunks": 1,
-    "size": 889
-  },
   "中国佛教发展史略": {
     "file": "corpus/中国佛教发展史略.json",
     "chunks": 286,
@@ -473,6 +468,11 @@
     "file": "corpus/观音菩萨的慈悲与人类文化的关系.json",
     "chunks": 7,
     "size": 10291
+  },
+  "中国式管理": {
+    "file": "corpus/中国式管理.json",
+    "chunks": 44,
+    "size": 63720
   },
   "中庸讲记（录音整理）": {
     "file": "corpus/中庸讲记（录音整理）.json",
