@@ -1159,10 +1159,9 @@ function renderLibrary() {
     return;
   }
 
-  // 按 chunk 数排序，取前 30 部展示
+  // 按 chunk 数排序，展示全部著作
   works
     .sort((a, b) => b[1].chunks - a[1].chunks)
-    .slice(0, 30)
     .forEach(([work, info]) => {
       const node = els.docTemplate.content.cloneNode(true);
       node.querySelector("h3").textContent = work;
@@ -1170,13 +1169,6 @@ function renderLibrary() {
         `${info.chunks.toLocaleString()} 片段 · ${(info.size / 1024).toFixed(0)} KB`;
       els.libraryList.appendChild(node);
     });
-
-  if (works.length > 30) {
-    const more = document.createElement("div");
-    more.className = "empty";
-    more.textContent = `... 还有 ${works.length - 30} 部著作`;
-    els.libraryList.appendChild(more);
-  }
 }
 
 async function renderResults(query, results) {
