@@ -70,6 +70,7 @@ function bindEls() {
     loadingOverlay: document.getElementById("loadingOverlay"),
     loadingText: document.getElementById("loadingText"),
     loadingBar: document.getElementById("loadingBar"),
+    loadingHint: document.getElementById("loadingHint"),
 
     // 侧边栏
     libraryStats: document.getElementById("libraryStats"),
@@ -973,7 +974,7 @@ async function generateAIAnswer(query, results) {
   msgDiv.className = "chat-msg chat-assistant";
   msgDiv.id = msgId;
   msgDiv.innerHTML =
-    '<div class="chat-bubble"><div class="streaming"><span class="cursor">|</span></div></div>';
+    '<div class="chat-bubble"><div class="streaming">AI 正在思考<span class="cursor">…</span></div></div>';
   if (convContainer) {
     convContainer.appendChild(msgDiv);
     convContainer.scrollTop = convContainer.scrollHeight;
@@ -1029,6 +1030,7 @@ async function generateAIAnswer(query, results) {
               .replace(/\n/g, "<br>")
               .replace(/\[(\d+)\]/g, '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>');
             if (msgDiv) {
+              // 清除"思考中"状态，首次显示实际内容
               msgDiv.querySelector(".chat-bubble").innerHTML =
                 '<div class="ai-answer">' + rendered +
                 '<span class="cursor">|</span></div>';
@@ -1416,6 +1418,8 @@ async function init() {
     state.lastResults = results;
 
     // 加载全文
+    els.quickAskBtn.textContent = "加载原文...";
+    els.answerStatus.textContent = "正在加载检索片段的全文...";
     const neededWorks = new Set(results.map((r) => r.chunk.w));
     await Promise.all([...neededWorks].map((w) => loadCorpusForWork(w).catch(() => {})));
     for (const r of results) {
@@ -1432,6 +1436,7 @@ async function init() {
     // 直接调用 AI 回答
     await generateAIAnswer(q, results);
     els.quickAskBtn.disabled = false;
+    els.quickAskBtn.textContent = "发送";
   }
 
   if (els.quickAskBtn) {
@@ -1449,6 +1454,10 @@ async function init() {
       return;
     }
     // 确保全文已加载
+    els.aiAnswerBtn.disabled = true;
+    els.aiAnswerBtn.textContent = "正在加载原文...";
+    els.answerStatus.textContent = "正在加载检索片段的全文...";
+
     const neededWorks = new Set(state.lastResults.map((r) => r.chunk.w));
     await Promise.all([...neededWorks].map((w) => loadCorpusForWork(w).catch(() => {})));
 
@@ -1522,11 +1531,19 @@ async function startLoading() {
 
     // 获取服务器端索引版本（< 100 字节，极快）
     let serverVersion = null;
+    let serverIndexSize = null;
     try {
       const vResp = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
       if (vResp.ok) {
         const vInfo = await vResp.json();
         serverVersion = vInfo.v;
+        serverIndexSize = vInfo.size;
+        // 动态更新加载提示，显示实际文件大小
+        if (serverIndexSize && els.loadingHint) {
+          const sizeMB = (serverIndexSize / 1024 / 1024).toFixed(1);
+          els.loadingHint.textContent =
+            `首次访问需下载索引（约 ${sizeMB} MB），之后自动从本地缓存加载，秒开`;
+        }
       }
     } catch (e) {
       console.warn("无法获取索引版本信息:", e);
