@@ -19,6 +19,10 @@
 
 * { box-sizing: border-box; }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   margin: 0;
   background: var(--paper);
@@ -373,6 +377,18 @@ a { color: var(--accent-dark); }
 .chat-bubble .ai-answer { line-height: 1.85; }
 .chat-bubble .streaming { color: var(--ink); }
 .chat-bubble .cite { color: var(--accent-dark); font-weight: 600; font-size: 0.85em; }
+.chat-bubble .cite-link {
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.chat-bubble .cite-link:hover sup {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 2px;
+}
 .chat-bubble .error-msg { color: var(--danger); font-weight: 600; }
 
 /* ── 追问输入栏 ──────────────────────────────────── */
@@ -434,6 +450,12 @@ a { color: var(--accent-dark); }
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px;
+  scroll-margin-top: 24px;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+.result-card:target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31,111,99,0.15);
 }
 .result-meta {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;

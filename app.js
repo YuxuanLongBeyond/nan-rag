@@ -1027,7 +1027,7 @@ async function generateAIAnswer(query, results) {
             answerText += delta;
             const rendered = escapeHtml(answerText)
               .replace(/\n/g, "<br>")
-              .replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>');
+              .replace(/\[(\d+)\]/g, '<a href="#cite-$1" class="cite-link"><sup class="cite">[$1]</sup></a>');
             if (msgDiv) {
               msgDiv.querySelector(".chat-bubble").innerHTML =
                 '<div class="ai-answer">' + rendered +
@@ -1047,7 +1047,7 @@ async function generateAIAnswer(query, results) {
     const finalHtml = '<div class="ai-answer">' +
       answerText
         .replace(/\n/g, "<br>")
-        .replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>') +
+        .replace(/\[(\d+)\]/g, '<a href="#cite-$1" class="cite-link"><sup class="cite">[$1]</sup></a>') +
       "</div>";
 
     if (msgDiv) {
@@ -1132,7 +1132,7 @@ function buildConservativeAnswer(query, results, strictMode) {
     .slice(0, 5)
     .map((r, i) => {
       const src = `《${r.chunk.w}》${r.chunk.c}（相关度 ${r.score.toFixed(2)}）`;
-      return `<li>[${i + 1}] ${escapeHtml(src)}</li>`;
+      return `<li><a href="#cite-${i + 1}" class="cite-link">[${i + 1}]</a> ${escapeHtml(src)}</li>`;
     })
     .join("");
 
@@ -1196,8 +1196,12 @@ async function renderResults(query, results) {
     )
   );
 
-  results.forEach((r) => {
+  results.forEach((r, i) => {
     const node = els.resultTemplate.content.cloneNode(true);
+
+    // 为每个结果卡片添加 id，支持从 AI 回答的引用编号跳转
+    const card = node.querySelector(".result-card");
+    if (card) card.id = `cite-${i + 1}`;
 
     // 著作名 + 章节
     node.querySelector(".result-work").textContent = r.chunk.w;
@@ -1421,6 +1425,9 @@ async function init() {
         if (entry) r.text = entry.t;
       }
     }
+
+    // 更新原文片段区域（使 AI 回答中的引用编号可点击跳转）
+    await renderResults(q, results);
 
     // 直接调用 AI 回答
     await generateAIAnswer(q, results);
