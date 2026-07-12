@@ -890,7 +890,8 @@ function buildConversationMessages(query, results) {
     "你是一个严谨的中文文献考据助手。" +
     "只根据提供的南怀瑾相关资料片段回答问题。" +
     "每个判断都要标注引用编号。如果资料没有明确支持，不要补充外部知识。" +
-    '区分"当前资料未找到"和"作者从未说过"。';
+    '区分"当前资料未找到"和"作者从未说过"。' +
+    "如果用户追问，请结合之前的对话上下文回答。";
 
   const evidence = results.map((r, i) => {
     const text = r.text || r.chunk.p;
@@ -899,9 +900,14 @@ function buildConversationMessages(query, results) {
 
   const messages = [{ role: "system", content: systemPrompt }];
 
-  // 携带历史对话（不含当轮）
+  // 携带历史对话（每轮的完整 user prompt + assistant 回答）
   for (const turn of state.conversation) {
-    messages.push({ role: turn.role, content: turn.content });
+    if (turn.role === "user") {
+      // 历史 user 消息：用存储的完整 prompt（含证据）
+      messages.push({ role: "user", content: turn.prompt });
+    } else {
+      messages.push({ role: "assistant", content: turn.content });
+    }
   }
 
   // 当前问题 + 检索片段
@@ -913,7 +919,7 @@ function buildConversationMessages(query, results) {
   ].join("\n");
   messages.push({ role: "user", content: currentPrompt });
 
-  return messages;
+  return { messages, currentPrompt };
 }
 
 async function generateAIAnswer(query, results) {
@@ -922,13 +928,23 @@ async function generateAIAnswer(query, results) {
     return;
   }
 
+  const { messages, currentPrompt } = buildConversationMessages(query, results);
+
   els.aiAnswerBtn.disabled = true;
   els.aiAnswerBtn.textContent = "AI 回答中...";
 
-  // 追加用户问题到对话历史
+  const convContainer = document.getElementById("conversationList");
+
+  // 第一轮对话时隐藏初始提示
+  if (state.conversation.length === 0) {
+    els.answerBox.style.display = "none";
+  }
+
+  // 追加用户问题到对话历史（存储完整 prompt 以便后续轮次使用）
   state.conversation.push({
     role: "user",
     content: query,
+    prompt: currentPrompt,
     results: results.map((r) => ({
       work: r.chunk.w,
       chapter: r.chunk.c,
@@ -936,9 +952,18 @@ async function generateAIAnswer(query, results) {
     })),
   });
 
-  // 创建流式回答的容器
+  // 显示用户问题气泡
+  if (convContainer) {
+    const userMsgDiv = document.createElement("div");
+    userMsgDiv.className = "chat-msg chat-user";
+    userMsgDiv.innerHTML =
+      '<div class="chat-bubble">' + escapeHtml(query) + "</div>";
+    convContainer.appendChild(userMsgDiv);
+    convContainer.scrollTop = convContainer.scrollHeight;
+  }
+
+  // 创建 AI 流式回答容器
   const msgId = "msg-" + Date.now();
-  const convContainer = document.getElementById("conversationList");
   const msgDiv = document.createElement("div");
   msgDiv.className = "chat-msg chat-assistant";
   msgDiv.id = msgId;
@@ -947,15 +972,9 @@ async function generateAIAnswer(query, results) {
   if (convContainer) {
     convContainer.appendChild(msgDiv);
     convContainer.scrollTop = convContainer.scrollHeight;
-  } else {
-    // 兼容旧版（对话容器未渲染时，使用 answerBox）
-    els.answerBox.innerHTML =
-      '<div class="streaming"><span class="cursor">|</span></div>';
   }
 
   try {
-    const messages = buildConversationMessages(query, results);
-
     const resp = await fetch(API_URL, {
       method: "POST",
       headers: {
@@ -966,7 +985,7 @@ async function generateAIAnswer(query, results) {
         model: "deepseek-chat",
         messages,
         stream: true,
-        temperature: 0.1,
+        temperature: state.conversation.length > 2 ? 0.3 : 0.1,
         max_tokens: 2048,
       }),
     });
@@ -1004,15 +1023,13 @@ async function generateAIAnswer(query, results) {
             const rendered = escapeHtml(answerText)
               .replace(/\n/g, "<br>")
               .replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>');
-            if (convContainer && msgDiv) {
+            if (msgDiv) {
               msgDiv.querySelector(".chat-bubble").innerHTML =
                 '<div class="ai-answer">' + rendered +
                 '<span class="cursor">|</span></div>';
-              convContainer.scrollTop = convContainer.scrollHeight;
-            } else {
-              els.answerBox.innerHTML =
-                '<div class="streaming">' + rendered +
-                '<span class="cursor">|</span></div>';
+              if (convContainer) {
+                convContainer.scrollTop = convContainer.scrollHeight;
+              }
             }
           }
         } catch (e) {
@@ -1028,13 +1045,16 @@ async function generateAIAnswer(query, results) {
         .replace(/\[(\d+)\]/g, '<sup class="cite">[$1]</sup>') +
       "</div>";
 
-    if (convContainer && msgDiv) {
+    if (msgDiv) {
       msgDiv.querySelector(".chat-bubble").innerHTML = finalHtml;
-      convContainer.scrollTop = convContainer.scrollHeight;
-    } else {
-      els.answerBox.innerHTML = finalHtml;
+      if (convContainer) {
+        convContainer.scrollTop = convContainer.scrollHeight;
+      }
     }
-    els.answerStatus.textContent = "AI 回答（基于检索片段）";
+    els.answerStatus.textContent =
+      state.conversation.length >= 2
+        ? `多轮对话（第 ${Math.floor(state.conversation.length / 2) + 1} 轮）`
+        : "AI 回答（基于检索片段）";
 
     // 保存到对话历史
     state.conversation.push({ role: "assistant", content: answerText });
@@ -1044,25 +1064,34 @@ async function generateAIAnswer(query, results) {
       state.conversation.shift();
     }
   } catch (err) {
-    // 移除失败的用户消息
-    if (state.conversation.length > 0 &&
-        state.conversation[state.conversation.length - 1].role === "user") {
+    // 移除失败的用户消息（从历史和 UI）
+    while (state.conversation.length > 0 &&
+           state.conversation[state.conversation.length - 1].role === "user") {
       state.conversation.pop();
     }
-
-    const errHtml = `<div class="error-msg">AI 回答失败：${escapeHtml(err.message)}</div>`;
-    if (convContainer && msgDiv) {
-      msgDiv.querySelector(".chat-bubble").innerHTML = errHtml;
-    } else {
-      els.answerBox.innerHTML = errHtml;
+    // 移除 UI 中的用户气泡
+    if (convContainer && msgDiv && msgDiv.previousElementSibling &&
+        msgDiv.previousElementSibling.classList.contains("chat-user")) {
+      msgDiv.previousElementSibling.remove();
     }
+    // 移除 AI 消息容器
+    if (msgDiv) msgDiv.remove();
+
+    const errHtml = '<div class="error-msg">AI 回答失败：' +
+      escapeHtml(err.message) + "</div>";
     els.answerStatus.textContent = "AI 回答失败";
+
+    // 恢复空对话时的初始状态
+    if (state.conversation.length === 0) {
+      els.answerBox.style.display = "";
+    }
   } finally {
     els.aiAnswerBtn.disabled = false;
     els.aiAnswerBtn.textContent = "AI 回答";
     updateConversationUI();
   }
 }
+
 
 // ── 保守回答（无需 API） ─────────────────────────
 function buildConservativeAnswer(query, results, strictMode) {
@@ -1257,6 +1286,7 @@ async function runSearch() {
 // ── 多轮对话 ──────────────────────────────────────
 function startNewConversation() {
   state.conversation = [];
+  els.answerBox.style.display = "";
   els.answerBox.innerHTML =
     '<p>检索结果将在此显示。点击"AI 回答"基于原文片段生成回答（需 API Key），或点击"复制提示词"手动粘贴到任意 LLM。</p>';
   els.answerStatus.textContent = "新对话已开始";
