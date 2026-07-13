@@ -756,14 +756,14 @@ async function searchSemantic(query, topK, minScore) {
     // 用候选集加权质心作为 query 代理向量
     const { dim, buffer, min: fmin, max: fmax } = state.embeddings;
     const scale = (fmax - fmin) / 255.0;
-    const int8View = new Int8Array(buffer, 4, N * dim);
+    const uint8View = new Uint8Array(buffer, 4, N * dim);
     const proxyVec = new Float32Array(dim);
     let totalWeight = 0;
     for (const c of topFast) {
       const base = c.idx * dim;
       const weight = c.quickScore;
       for (let d = 0; d < dim; d++) {
-        proxyVec[d] += (int8View[base + d] * scale + fmin) * weight;
+        proxyVec[d] += (uint8View[base + d] * scale + fmin) * weight;
       }
       totalWeight += weight;
     }
@@ -784,7 +784,7 @@ async function searchSemantic(query, topK, minScore) {
         let dot = 0;
         const base = i * dim;
         for (let d = 0; d < dim; d++) {
-          dot += proxyVec[d] * (int8View[base + d] * scale + fmin);
+          dot += proxyVec[d] * (uint8View[base + d] * scale + fmin);
         }
         queryEmbeddingScores[i] = (dot + 1) / 2;
       }

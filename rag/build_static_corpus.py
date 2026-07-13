@@ -37,6 +37,7 @@ CHUNK_FILES = [
     "guoxue_chunks.jsonl",
     "supplement_chunks.jsonl",
     "docx_chunks.jsonl",
+    "zhangyue_chunks.jsonl",
 ]
 
 OUT_INDEX = os.path.join(PROJECT_DIR, "search_index.json")

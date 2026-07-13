@@ -583,5 +583,20 @@
     "file": "corpus/太湖版《达摩多罗禅经》讲座.json",
     "chunks": 1788,
     "size": 2788521
+  },
+  "洞山指月": {
+    "file": "corpus/洞山指月.json",
+    "chunks": 159,
+    "size": 217779
+  },
+  "大圆满禅定休息简说": {
+    "file": "corpus/大圆满禅定休息简说.json",
+    "chunks": 184,
+    "size": 237806
+  },
+  "南怀瑾讲演录": {
+    "file": "corpus/南怀瑾讲演录.json",
+    "chunks": 5,
+    "size": 5211
   }
 }
