@@ -17,6 +17,7 @@ import os
 import re
 import struct
 import sys
+import argparse
 from collections import OrderedDict
 
 # sentence-transformers 是可选依赖，仅用于生成语义向量
@@ -32,6 +33,9 @@ PROJECT_DIR = os.path.dirname(RAG_DIR)
 CORPUS_DIR = os.path.join(PROJECT_DIR, "corpus")
 
 CHUNK_FILES = [
+    "epub_chunks.jsonl",       # EPUB 优先 — 最干净的全文数据
+    "nanhuaijin_quanji_chunks.jsonl",  # 南怀瑾全集 txt 补充（13部短篇开示）
+    "new_works_chunks.jsonl",  # data_new 新增作品（对日抗战/素书/海航讲座）
     "nanhuaijin_chunks.jsonl",
     "shixiu_chunks.jsonl",
     "guoxue_chunks.jsonl",
@@ -40,13 +44,67 @@ CHUNK_FILES = [
     "zhangyue_chunks.jsonl",
 ]
 
+# EPUB 中已有的作品名（从 extract_epub_books.py 的 ALL_BOOKS 推导）
+# 这些作品在其他来源中的 chunk 将被跳过，以 EPUB 版本为准
+EPUB_WORKS = {
+    "论语别裁", "话说中庸", "原本大学微言", "孟子旁通",
+    "孟子与万章", "孟子与离娄", "孟子与公孙丑", "孟子与尽心篇",
+    "孟子与滕文公、告子", "孔子和他的弟子们",
+    "金刚经说什么", "维摩诘的花雨满天", "瑜伽师地论 声闻地讲录",
+    "药师经的济世观", "楞严大义今释", "圆觉经略说",
+    "学佛者的基本信念", "如何修证佛法", "定慧初修",
+    "我说参同契", "老子他说", "庄子諵譁", "列子臆说",
+    "中国道教发展史略述", "禅宗与道家",
+    "易经系传别讲", "易经杂说",
+    "禅话", "禅海蠡测", "大圆满禅定休息简说",
+    "静坐修道与长生不老",
+    "廿一世纪初的前言后语", "漫谈中国文化", "禅与生命的认知初讲",
+    "小言黄帝内经与生命科学", "人生的起点和终站",
+    "南怀瑾与彼得·圣吉", "答问青壮年参禅者", "南怀瑾讲演录",
+    "中国佛教发展史略述", "新旧教育的变与惑",
+    "历史的经验", "中国文化泛言",
+}
+
+# 作品名称变体映射：其他来源 → EPUB 标准名
+# 用于在非 EPUB 来源中识别应被跳过作品
+WORK_NAME_ALIASES = {
+    "老子他说(上下)": "老子他说",
+    "庄子諵譁(2017年)": "庄子諵譁",
+    "中国道教发展史略": "中国道教发展史略述",
+    "中国佛教发展史略": "中国佛教发展史略述",
+    "《金刚经》说什么": "金刚经说什么",
+    "《楞严》大义今释": "楞严大义今释",
+    "《圆觉经》略说": "圆觉经略说",
+    "《药师经》的济世观": "药师经的济世观",
+    "廿一世纪初的前言后语": "廿一世纪初的前言后语",
+    "二十一世纪初的前言后语": "廿一世纪初的前言后语",
+    "南怀瑾讲演录2004-2006": "南怀瑾讲演录",
+    "漫谈中国文化——金融·企业·国学": "漫谈中国文化",
+    "亦新亦旧的一代": "新旧教育的变与惑",
+    "瑜伽师地论讲座": "瑜伽师地论 声闻地讲录",
+    "南《瑜伽师地论》": "瑜伽师地论 声闻地讲录",
+    "人生的起点和终站": "人生的起点和终站",
+}
+
+
+def _normalize_work_name(work):
+    """将作品名标准化为 EPUB 标准名（如果存在映射）。"""
+    return WORK_NAME_ALIASES.get(work, work)
+
+
+def _is_epub_covered(work):
+    """检查作品是否已被 EPUB 覆盖（含名称变体）。"""
+    return work in EPUB_WORKS or _normalize_work_name(work) in EPUB_WORKS
+
 OUT_INDEX = os.path.join(PROJECT_DIR, "search_index.json")
 OUT_MANIFEST = os.path.join(PROJECT_DIR, "works_manifest.json")
 OUT_VERSION = os.path.join(PROJECT_DIR, "index_version.json")
 OUT_EMBEDDINGS = os.path.join(PROJECT_DIR, "embeddings.bin")
 EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 EMBEDDING_DIM = 384
-TEXT_PREVIEW_LEN = 60
+# chunk 默认 500 字、重叠 80 字。索引前 420 字可与下一 chunk 的前部
+# 连续覆盖正文，避免旧版只索引前 60 字造成的大量漏召回。
+TEXT_PREVIEW_LEN = 420
 
 
 def sanitize_filename(name):
@@ -59,10 +117,16 @@ def sanitize_filename(name):
 
 
 def load_chunks():
-    """加载所有 chunk JSONL，返回统一格式的 chunk 列表。"""
+    """加载所有 chunk JSONL，返回统一格式的 chunk 列表。
+
+    EPUB 数据优先：如果某部作品在 EPUB 中已有完整数据，则跳过
+    其他来源中同名作品的 chunk（避免网页抓取的劣质版本覆盖 EPUB）。
+    """
     chunks = []
     seen_ids = set()
+    epub_works_seen = set()  # 从 EPUB 中已加载的作品
     stats = {}
+    skipped_by_epub = {}     # 记录被 EPUB 跳过的统计
 
     for fname in CHUNK_FILES:
         fpath = os.path.join(RAG_DIR, fname)
@@ -70,7 +134,9 @@ def load_chunks():
             print(f"  ⚠ 跳过（文件不存在）: {fname}")
             continue
 
+        is_epub = fname.startswith("epub_")
         count = 0
+        skipped_count = 0
         with open(fpath, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
@@ -81,17 +147,26 @@ def load_chunks():
                 except json.JSONDecodeError:
                     continue
 
+                work = obj.get("work", "未知")
+
+                # 非 EPUB 来源：如果该作品已由 EPUB 覆盖，跳过
+                if not is_epub and _is_epub_covered(work):
+                    skipped_count += 1
+                    continue
+
                 # 统一 id 字段（不同来源的 JSONL 字段名略有差异）
                 chunk_id = obj.get("id", "")
                 if not chunk_id:
                     # 用 work + chapter_no 构造 id
-                    work = obj.get("work", "未知")
                     ch_no = obj.get("chapter_no", obj.get("chunk_no", 0))
                     chunk_id = f"{work}:{ch_no:04d}"
 
                 if chunk_id in seen_ids:
                     continue
                 seen_ids.add(chunk_id)
+
+                if is_epub:
+                    epub_works_seen.add(work)
 
                 # 标准化字段
                 text = obj.get("text", "")
@@ -116,8 +191,12 @@ def load_chunks():
                 })
                 count += 1
 
-        stats[fname] = count
-        print(f"  ✓ {fname}: {count} chunks")
+        stats[fname] = {"loaded": count, "skipped": skipped_count}
+        if skipped_count > 0:
+            print(f"  ✓ {fname}: {count} chunks (跳过 {skipped_count} — 已由 EPUB 覆盖)")
+        else:
+            print(f"  ✓ {fname}: {count} chunks")
+    print(f"  EPUB 覆盖作品数: {len(epub_works_seen)}")
 
     return chunks, stats
 
@@ -246,6 +325,14 @@ def build_embeddings(chunks):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="构建静态 RAG 语料与检索索引")
+    parser.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="保留现有 embeddings.bin，不重新运行耗时的向量模型",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("南怀瑾 RAG 静态语料库构建工具")
     print("=" * 60)
@@ -288,7 +375,9 @@ def main():
 
     # 4. 生成语义向量（可选）
     print("\n[4/5] 生成语义向量...")
-    emb_result = build_embeddings(chunks)
+    emb_result = None if args.skip_embeddings else build_embeddings(chunks)
+    if args.skip_embeddings:
+        print("  ↷ 已按参数跳过语义向量生成")
     if emb_result:
         dim, emb_buffer, emb_min, emb_max = emb_result
         with open(OUT_EMBEDDINGS, 'wb') as f:

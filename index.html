@@ -53,7 +53,7 @@
             <div class="api-config">
               <label for="apiKeyInput">DeepSeek API Key</label>
               <div class="api-key-row">
-                <input id="apiKeyInput" type="password" placeholder="sk-..." />
+                <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
                 <button id="saveApiKey" type="button">保存</button>
               </div>
               <p id="apiStatus" class="api-status"></p>
@@ -83,7 +83,7 @@
         <div class="search-card">
           <label for="queryInput">问题或关键词</label>
           <div class="search-row">
-            <input id="queryInput" type="search" placeholder="例如：南怀瑾如何理解"安那般那"？什么是"十六特胜"？" />
+            <input id="queryInput" type="search" placeholder="例如：如何理解“安那般那”？什么是“十六特胜”？" />
             <button id="searchButton" type="button">检索</button>
           </div>
           <div class="controls">
@@ -104,7 +104,7 @@
             <span class="mode-label">搜索模式</span>
             <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy" checked> 模糊</label>
             <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
-            <label class="mode-option"><input type="radio" name="searchMode" value="semantic"> 语义</label>
+            <label class="mode-option" title="首次使用需按需加载约 26 MB 语义向量"><input type="radio" name="searchMode" value="semantic"> 语义</label>
           </div>
         </div>
 

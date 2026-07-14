@@ -22,6 +22,12 @@ const COPYRIGHT_KEY = "nan-copyright-accepted";
 const API_KEY_STORAGE = "nan-deepseek-key";
 const API_URL = "https://api.deepseek.com/v1/chat/completions";
 const CONVERSATION_MAX_TURNS = 10;
+const MAX_RESULTS_PER_SECTION = 2;
+const QUERY_STOPWORDS = new Set([
+  "南怀瑾", "南先生", "南老师", "先生", "老师", "如何", "怎么",
+  "怎样", "什么", "什么是", "是什么", "为何", "为什么", "认为",
+  "看待", "理解", "解释", "讲过", "说过", "请问", "一下",
+]);
 
 // ── 全局状态 ──────────────────────────────────────
 const state = {
@@ -40,6 +46,8 @@ const state = {
   // 检索结果
   lastResults: [],
   lastPrompt: "",
+  searchSeq: 0,
+  indexVersion: null,
 
   // 加载状态
   loading: { stage: "idle", current: 0, total: 0 },
@@ -115,23 +123,40 @@ function bindEls() {
 
 // ── 工具函数 ──────────────────────────────────────
 function tokenize(text) {
-  const lower = text.toLowerCase();
+  const lower = String(text).normalize("NFKC").toLowerCase();
   const latin = lower.match(/[a-z0-9]+/g) || [];
-  const chinese = lower.match(/[一-鿿]/g) || [];
-  const phrases = lower
-    .split(/[，。！？、；：,.!?;:\s()[\]《》「」『』"'""'']+/g)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2 && /[一-鿿]/.test(t));
-  return [...new Set([...latin, ...chinese, ...phrases])];
+  const searchable = lower.replace(
+    /南怀瑾|南先生|南老师|先生|老师|什么是|是什么|为什么|如何|怎么|怎样|为何|认为|看待|理解|解释|讲过|说过|请问|一下/g,
+    " ",
+  );
+  const runs = searchable.match(/[㐀-鿿]+/g) || [];
+  const chinese = [];
+
+  for (const run of runs) {
+    if (run.length === 1) {
+      chinese.push(run);
+      continue;
+    }
+    if (run.length <= 10 && !QUERY_STOPWORDS.has(run)) chinese.push(run);
+    for (let n = 2; n <= Math.min(4, run.length); n += 1) {
+      for (let i = 0; i <= run.length - n; i += 1) {
+        const token = run.slice(i, i + n);
+        if (!QUERY_STOPWORDS.has(token)) chinese.push(token);
+      }
+    }
+  }
+
+  return [...new Set([...latin, ...chinese])];
 }
 
 function makeGrams(text) {
-  const clean = text.toLowerCase().replace(/\s+/g, "");
+  const clean = String(text).normalize("NFKC").toLowerCase()
+    .replace(/[^\u3400-\u9fffa-z0-9]+/g, "");
   const grams = new Map();
   for (let n = 2; n <= 4; n += 1) {
     for (let i = 0; i <= clean.length - n; i += 1) {
       const gram = clean.slice(i, i + n);
-      if (!/[一-鿿a-z0-9]/.test(gram)) continue;
+      if (!/[\u3400-\u9fffa-z0-9]/.test(gram)) continue;
       grams.set(gram, (grams.get(gram) || 0) + 1);
     }
   }
@@ -149,6 +174,72 @@ function cosineLike(queryGrams, chunkGrams) {
   return overlap / Math.sqrt(querySize * chunkSize);
 }
 
+function estimateTokenDF(tokens) {
+  const N = state.index.length;
+  const sampleTarget = Math.min(10000, N);
+  const step = Math.max(1, Math.floor(N / Math.max(1, sampleTarget)));
+  const sampled = Math.ceil(N / step);
+  const tokenDF = new Map();
+
+  for (const token of tokens) {
+    if (token.length < 2) continue;
+    let df = 0;
+    for (let i = 0; i < N; i += step) {
+      if (state.index[i]._searchText.includes(token)) df += 1;
+    }
+    const idf = Math.log((sampled + 1) / (df + 0.5)) + 1;
+    tokenDF.set(token, Math.max(0.5, Math.min(5, idf)));
+  }
+  return tokenDF;
+}
+
+function tokenWeight(token, tokenDF) {
+  const lengthWeight = Math.min(2, Math.max(1, token.length / 2));
+  return lengthWeight * (tokenDF.get(token) || 0.5);
+}
+
+function keywordCoverage(text, tokens, tokenDF) {
+  let matched = 0;
+  let total = 0;
+  for (const token of tokens) {
+    if (token.length < 2) continue;
+    const weight = tokenWeight(token, tokenDF);
+    total += weight;
+    if (text.includes(token)) matched += weight;
+  }
+  return total > 0 ? matched / total : 0;
+}
+
+function longestQueryToken(tokens) {
+  return tokens.reduce((longest, token) =>
+    token.length > longest.length ? token : longest, "");
+}
+
+function selectDiverseResults(scored, topK, minScore) {
+  const eligible = scored
+    .filter((r) => r.score >= minScore)
+    .sort((a, b) => b.score - a.score);
+  const selected = [];
+  const deferred = [];
+  const sectionCounts = new Map();
+
+  for (const result of eligible) {
+    const section = `${result.chunk.w}\u0000${result.chunk.c}`;
+    const count = sectionCounts.get(section) || 0;
+    if (count < MAX_RESULTS_PER_SECTION && selected.length < topK) {
+      selected.push(result);
+      sectionCounts.set(section, count + 1);
+    } else {
+      deferred.push(result);
+    }
+  }
+  for (const result of deferred) {
+    if (selected.length >= topK) break;
+    selected.push(result);
+  }
+  return selected;
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -159,17 +250,65 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function renderAIText(text) {
+  return escapeHtml(text)
+    .replace(/\n/g, "<br>")
+    .replace(
+      /\[(\d+)\]/g,
+      '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>',
+    );
+}
+
+function safeExternalUrl(value) {
+  try {
+    const url = new URL(value, window.location.href);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
 function highlight(text, query) {
-  const tokens = tokenize(query)
+  const candidates = tokenize(query)
     .filter((t) => t.length >= 2)
-    .sort((a, b) => b.length - a.length)
-    .slice(0, 12);
-  let out = escapeHtml(text);
-  tokens.forEach((token) => {
-    const safe = escapeRegExp(escapeHtml(token));
-    out = out.replace(new RegExp(safe, "gi"), (m) => `<mark>${m}</mark>`);
-  });
+    .sort((a, b) => b.length - a.length);
+  const tokens = [];
+  for (const token of candidates) {
+    if (!tokens.some((longer) => longer.includes(token))) tokens.push(token);
+    if (tokens.length >= 12) break;
+  }
+  if (tokens.length === 0) return escapeHtml(text);
+
+  const pattern = new RegExp(tokens.map(escapeRegExp).join("|"), "gi");
+  let out = "";
+  let cursor = 0;
+  for (const match of String(text).matchAll(pattern)) {
+    out += escapeHtml(String(text).slice(cursor, match.index));
+    out += `<mark>${escapeHtml(match[0])}</mark>`;
+    cursor = match.index + match[0].length;
+  }
+  out += escapeHtml(String(text).slice(cursor));
   return out;
+}
+
+function makeContextualSnippet(text, query, maxLength = 300) {
+  const compact = String(text).replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) return compact;
+
+  const tokens = tokenize(query)
+    .filter((token) => token.length >= 2)
+    .sort((a, b) => b.length - a.length);
+  let matchAt = -1;
+  for (const token of tokens) {
+    matchAt = compact.toLowerCase().indexOf(token);
+    if (matchAt !== -1) break;
+  }
+
+  const start = matchAt === -1
+    ? 0
+    : Math.max(0, Math.min(matchAt - 70, compact.length - maxLength));
+  const excerpt = compact.slice(start, start + maxLength);
+  return `${start > 0 ? "..." : ""}${excerpt}${start + maxLength < compact.length ? "..." : ""}`;
 }
 
 // ── IndexedDB ─────────────────────────────────────
@@ -208,7 +347,12 @@ async function getCachedWork(db, work) {
 async function putCachedWork(db, work, data) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_WORKS, "readwrite");
-    tx.objectStore(STORE_WORKS).put({ work, ...data, cachedAt: Date.now() });
+    tx.objectStore(STORE_WORKS).put({
+      work,
+      ...data,
+      version: state.indexVersion,
+      cachedAt: Date.now(),
+    });
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -368,6 +512,7 @@ async function loadSearchIndexFromCache() {
     const cached = await getCachedIndex(db);
     db.close();
     if (!cached) return null;
+    state.indexVersion = cached.version;
     console.log(`从 IndexedDB 加载索引 (v${cached.version}, ${cached.count.toLocaleString()} 条)`);
     return parseAndBuildIndex(cached.raw);
   } catch (e) {
@@ -386,9 +531,7 @@ async function checkForIndexUpdate(currentVersion) {
     const info = await resp.json();
     if (info.v && info.v !== currentVersion) {
       console.log(`索引有新版本: ${info.v}（当前: ${currentVersion}），后台更新中...`);
-      const db = await openDB();
       await loadSearchIndexFromNetwork(info.v);
-      db.close();
     }
   } catch (e) {
     // 静默失败
@@ -437,7 +580,7 @@ async function loadEmbeddingsFromNetwork(version) {
     console.warn("embeddings 缓存到 IndexedDB 失败:", e);
   }
 
-  return { dim, buffer, min: fmin, max: fmax };
+  return { dim, buffer, min: fmin, max: fmax, version };
 }
 
 /**
@@ -448,7 +591,9 @@ async function loadEmbeddingsFromCache() {
     const db = await openDB();
     const cached = await getCachedEmbeddings(db);
     db.close();
-    if (cached) {
+    const expectedBytes = state.index.length * cached?.dim + 12;
+    if (cached && cached.version === state.indexVersion &&
+        cached.buffer.byteLength === expectedBytes) {
       console.log(`从 IndexedDB 加载 embeddings (v${cached.version}, ${cached.dim} 维)`);
       return {
         dim: cached.dim,
@@ -457,6 +602,8 @@ async function loadEmbeddingsFromCache() {
         max: cached.max,
         version: cached.version,
       };
+    } else if (cached) {
+      console.warn("忽略与当前索引版本不匹配的 embeddings 缓存");
     }
   } catch (e) {
     console.warn("从 IndexedDB 加载 embeddings 失败:", e);
@@ -468,7 +615,9 @@ async function loadEmbeddingsFromCache() {
  * 检查是否有语义搜索所需的数据。
  */
 function hasSemanticSearch() {
-  return state.embeddings !== null && state.embeddings.buffer.byteLength > 12;
+  return state.embeddings !== null &&
+    state.embeddings.version === state.indexVersion &&
+    state.embeddings.buffer.byteLength === state.index.length * state.embeddings.dim + 12;
 }
 
 /**
@@ -490,7 +639,11 @@ async function checkAndLoadEmbeddings() {
     const vResp = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
     if (vResp.ok) {
       const vInfo = await vResp.json();
-      const embVersion = vInfo.v || "unknown";
+      const embVersion = state.indexVersion || vInfo.v || "unknown";
+      if (vInfo.v && state.indexVersion && vInfo.v !== state.indexVersion) {
+        console.warn("服务器 embeddings 与当前缓存索引版本不同，暂不加载");
+        return false;
+      }
       const emb = await loadEmbeddingsFromNetwork(embVersion);
       if (emb) {
         state.embeddings = emb;
@@ -536,7 +689,7 @@ async function loadCorpusForWork(work) {
     try {
       const db = await openDB();
       const cached = await getCachedWork(db, work);
-      if (cached && cached.chunks) {
+      if (cached && cached.chunks && cached.version === state.indexVersion) {
         const m = new Map(Object.entries(cached.chunks));
         state.textCache.set(work, m);
         db.close();
@@ -570,7 +723,11 @@ async function loadCorpusForWork(work) {
   })();
 
   state.pendingWorks.set(work, promise);
-  return promise;
+  try {
+    return await promise;
+  } finally {
+    state.pendingWorks.delete(work);
+  }
 }
 
 // ── 搜索 ──────────────────────────────────────────
@@ -581,7 +738,7 @@ async function loadCorpusForWork(work) {
 function searchExact(query, topK, minScore) {
   if (!query.trim() || state.index.length === 0) return [];
 
-  const q = query.replace(/\s+/g, "");
+  const q = query.toLowerCase().replace(/\s+/g, "");
   if (q.length < 1) return [];
 
   const results = [];
@@ -610,10 +767,7 @@ function searchExact(query, topK, minScore) {
     });
   }
 
-  return results
-    .filter((r) => r.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  return selectDiverseResults(results, topK, minScore);
 }
 
 /**
@@ -626,42 +780,15 @@ function searchFuzzy(query, topK, minScore) {
 
   const queryTokens = tokenize(query);
   const queryGrams = makeGrams(query);
-  const phrase = query.replace(/\s+/g, "");
+  const phrase = longestQueryToken(queryTokens);
 
-  // 计算 IDF-like 权重（稀有 token 权重更高）
-  const N = state.index.length;
-  const tokenDF = new Map();
-  for (const token of queryTokens) {
-    if (token.length < 2) continue;
-    let df = 0;
-    // 采样估算 DF（全量计算太慢，取前 5000 条 + 随机抽样 5000 条）
-    const sampleSize = Math.min(10000, N);
-    const step = Math.max(1, Math.floor(N / sampleSize));
-    for (let i = 0; i < N; i += step) {
-      if (state.index[i]._searchText.includes(token)) df++;
-    }
-    tokenDF.set(token, Math.max(1, df));
-  }
+  const tokenDF = estimateTokenDF(queryTokens);
 
   // Stage 1: 关键词评分（含 IDF 加权）
   const CANDIDATE_LIMIT = 300;
   const candidates = [];
   for (const item of state.index) {
-    let kwScore = 0;
-    for (const token of queryTokens) {
-      if (token.length === 1) {
-        if (item._searchText.includes(token)) kwScore += 0.02;
-      } else {
-        if (item._searchText.includes(token)) {
-          const idf = Math.log(N / (tokenDF.get(token) || 1));
-          kwScore += Math.min(0.22, token.length * 0.025) * Math.min(3, idf);
-          // 章节标题中出现 → 额外加权
-          if (item.c && item.c.toLowerCase().includes(token)) {
-            kwScore += 0.08;
-          }
-        }
-      }
-    }
+    const kwScore = keywordCoverage(item._searchText, queryTokens, tokenDF);
     if (kwScore > 0) {
       candidates.push({ item, kwScore });
     }
@@ -676,32 +803,22 @@ function searchFuzzy(query, topK, minScore) {
     const chunkGrams = makeGrams(item._searchText);
     const ngramScore = cosineLike(queryGrams, chunkGrams);
 
-    let keywordScore = 0, exactBoost = 0;
-    for (const token of queryTokens) {
-      if (token.length === 1) {
-        if (item._searchText.includes(token)) keywordScore += 0.02;
-      } else {
-        if (item._searchText.includes(token)) {
-          const idf = Math.log(N / (tokenDF.get(token) || 1));
-          keywordScore += Math.min(0.22, token.length * 0.025) * Math.min(3, idf);
-          if (item.c && item.c.toLowerCase().includes(token)) exactBoost += 0.08;
-        }
-      }
-    }
+    const keywordScore = keywordCoverage(item._searchText, queryTokens, tokenDF);
+    const titleScore = keywordCoverage((item.c || "").toLowerCase(), queryTokens, tokenDF);
     // 完整短语连续出现
     const compact = item._searchText.replace(/\s+/g, "");
-    if (phrase.length >= 3 && compact.includes(phrase)) exactBoost += 0.30;
+    const exactBoost = phrase.length >= 3 && compact.includes(phrase) ? 0.15 : 0;
 
     return {
       chunk: item,
-      score: Math.min(1, keywordScore + ngramScore * 0.85 + exactBoost),
+      score: Math.min(
+        1,
+        keywordScore * 0.5 + ngramScore * 0.3 + titleScore * 0.15 + exactBoost,
+      ),
     };
   });
 
-  return scored
-    .filter((r) => r.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  return selectDiverseResults(scored, topK, minScore);
 }
 
 /**
@@ -719,22 +836,11 @@ async function searchSemantic(query, topK, minScore) {
 
   const queryTokens = tokenize(query);
   const queryGrams = makeGrams(query);
-  const phrase = query.replace(/\s+/g, "");
+  const phrase = longestQueryToken(queryTokens);
   const N = state.index.length;
   const useEmbeddings = hasSemanticSearch();
 
-  // 计算 IDF-like 权重
-  const tokenDF = new Map();
-  for (const token of queryTokens) {
-    if (token.length < 2) continue;
-    let df = 0;
-    const sampleSize = Math.min(10000, N);
-    const step = Math.max(1, Math.floor(N / sampleSize));
-    for (let i = 0; i < N; i += step) {
-      if (state.index[i]._searchText.includes(token)) df++;
-    }
-    tokenDF.set(token, Math.max(1, df));
-  }
+  const tokenDF = estimateTokenDF(queryTokens);
 
   // 如果有 embeddings，用候选集的加权质心作为 query 代理向量
   let queryEmbeddingScores = null;
@@ -742,12 +848,11 @@ async function searchSemantic(query, topK, minScore) {
     // 第一阶段：快速关键词筛选候选集
     const fastCands = [];
     for (let i = 0; i < N; i++) {
-      let quickScore = 0;
-      for (const token of queryTokens) {
-        if (token.length >= 2 && state.index[i]._searchText.includes(token)) {
-          quickScore += 0.1;
-        }
-      }
+      const quickScore = keywordCoverage(
+        state.index[i]._searchText,
+        queryTokens,
+        tokenDF,
+      );
       if (quickScore > 0) fastCands.push({ idx: i, quickScore });
     }
     fastCands.sort((a, b) => b.quickScore - a.quickScore);
@@ -798,19 +903,19 @@ async function searchSemantic(query, topK, minScore) {
   const CANDIDATE_LIMIT = 500;
   const candidates = [];
   for (let i = 0; i < N; i++) {
-    let kwScore = 0;
     const item = state.index[i];
-    for (const token of queryTokens) {
-      if (token.length >= 2 && item._searchText.includes(token)) {
-        const idf = Math.log(N / (tokenDF.get(token) || 1));
-        kwScore += 0.03 * Math.min(3, idf);
-      }
-    }
+    const kwScore = keywordCoverage(item._searchText, queryTokens, tokenDF);
     if (kwScore > 0 || (queryEmbeddingScores && queryEmbeddingScores[i] > 0.3)) {
-      candidates.push({ idx: i, item, kwScore });
+      const embScore = queryEmbeddingScores ? queryEmbeddingScores[i] : 0;
+      candidates.push({
+        idx: i,
+        item,
+        kwScore,
+        candidateScore: kwScore * 0.6 + embScore * 0.4,
+      });
     }
   }
-  candidates.sort((a, b) => b.kwScore - a.kwScore);
+  candidates.sort((a, b) => b.candidateScore - a.candidateScore);
   const topCands = candidates.slice(0, CANDIDATE_LIMIT);
 
   // 精排
@@ -818,14 +923,8 @@ async function searchSemantic(query, topK, minScore) {
     const chunkGrams = makeGrams(item._searchText);
     const ngramScore = cosineLike(queryGrams, chunkGrams);
 
-    let keywordScore = 0, titleBoost = 0;
-    for (const token of queryTokens) {
-      if (token.length >= 2 && item._searchText.includes(token)) {
-        const idf = Math.log(N / (tokenDF.get(token) || 1));
-        keywordScore += 0.02 * Math.min(3, idf);
-        if (item.c && item.c.toLowerCase().includes(token)) titleBoost += 0.04;
-      }
-    }
+    const keywordScore = keywordCoverage(item._searchText, queryTokens, tokenDF);
+    const titleScore = keywordCoverage((item.c || "").toLowerCase(), queryTokens, tokenDF);
     const compact = item._searchText.replace(/\s+/g, "");
     let phraseBoost = 0;
     if (phrase.length >= 3 && compact.includes(phrase)) phraseBoost = 0.15;
@@ -833,16 +932,13 @@ async function searchSemantic(query, topK, minScore) {
     const embScore = queryEmbeddingScores ? queryEmbeddingScores[idx] : 0;
 
     const finalScore = embScore > 0
-      ? Math.min(1, embScore * 0.6 + ngramScore * 0.25 + keywordScore + titleBoost + phraseBoost)
-      : Math.min(1, ngramScore * 0.8 + keywordScore + titleBoost + phraseBoost);
+      ? Math.min(1, embScore * 0.45 + ngramScore * 0.2 + keywordScore * 0.2 + titleScore * 0.1 + phraseBoost)
+      : Math.min(1, ngramScore * 0.5 + keywordScore * 0.3 + titleScore * 0.1 + phraseBoost);
 
     return { chunk: item, score: finalScore };
   });
 
-  return scored
-    .filter((r) => r.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  return selectDiverseResults(scored, topK, minScore);
 }
 
 /**
@@ -1026,9 +1122,7 @@ async function generateAIAnswer(query, results) {
           const delta = data.choices?.[0]?.delta?.content;
           if (delta) {
             answerText += delta;
-            const rendered = escapeHtml(answerText)
-              .replace(/\n/g, "<br>")
-              .replace(/\[(\d+)\]/g, '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>');
+            const rendered = renderAIText(answerText);
             if (msgDiv) {
               // 清除"思考中"状态，首次显示实际内容
               msgDiv.querySelector(".chat-bubble").innerHTML =
@@ -1046,11 +1140,7 @@ async function generateAIAnswer(query, results) {
     }
 
     // 最终渲染
-    const finalHtml = '<div class="ai-answer">' +
-      answerText
-        .replace(/\n/g, "<br>")
-        .replace(/\[(\d+)\]/g, '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>') +
-      "</div>";
+    const finalHtml = '<div class="ai-answer">' + renderAIText(answerText) + "</div>";
 
     if (msgDiv) {
       msgDiv.querySelector(".chat-bubble").innerHTML = finalHtml;
@@ -1171,7 +1261,8 @@ function renderLibrary() {
     });
 }
 
-async function renderResults(query, results) {
+async function renderResults(query, results, requestId = state.searchSeq) {
+  if (requestId !== state.searchSeq) return;
   els.results.innerHTML = "";
   els.resultCount.textContent = `${results.length} 条`;
 
@@ -1189,7 +1280,9 @@ async function renderResults(query, results) {
       loadCorpusForWork(w).catch(() => {})
     )
   );
+  if (requestId !== state.searchSeq) return;
 
+  const fragment = document.createDocumentFragment();
   results.forEach((r, i) => {
     const node = els.resultTemplate.content.cloneNode(true);
 
@@ -1220,8 +1313,7 @@ async function renderResults(query, results) {
     const displayText = fullText || r.chunk.p;
 
     // 高亮预览
-    const compact = displayText.replace(/\s+/g, " ").trim();
-    const preview = compact.length > 300 ? compact.slice(0, 300) + "..." : compact;
+    const preview = makeContextualSnippet(displayText, query);
     node.querySelector(".snippet").innerHTML = highlight(preview, query);
 
     // 完整内容
@@ -1239,15 +1331,18 @@ async function renderResults(query, results) {
 
     // 来源链接
     const srcLink = node.querySelector(".result-source");
-    if (sourceUrl) {
-      srcLink.href = sourceUrl;
-      srcLink.title = sourceUrl;
+    const safeUrl = safeExternalUrl(sourceUrl);
+    if (safeUrl) {
+      srcLink.href = safeUrl;
+      srcLink.title = safeUrl;
     } else {
       srcLink.style.display = "none";
     }
 
-    els.results.appendChild(node);
+    fragment.appendChild(node);
   });
+  if (requestId !== state.searchSeq) return;
+  els.results.replaceChildren(fragment);
 }
 
 function renderAnswer(answer) {
@@ -1258,13 +1353,21 @@ function renderAnswer(answer) {
 
 // ── 主流程 ────────────────────────────────────────
 async function runSearch() {
-  const query = els.queryInput.value;
+  const requestId = ++state.searchSeq;
+  const query = els.queryInput.value.trim();
   const topK = parseInt(els.topK.value, 10) || 8;
-  const minScore = parseFloat(els.minScore.value) || 0.08;
+  const parsedMinScore = parseFloat(els.minScore.value);
+  const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
   const strictMode = els.strictMode.checked;
 
   if (state.index.length === 0) {
     els.answerStatus.textContent = "搜索索引尚未加载完成";
+    return;
+  }
+  if (!query) {
+    state.lastResults = [];
+    renderAnswer(buildConservativeAnswer(query, [], strictMode));
+    await renderResults(query, [], requestId);
     return;
   }
 
@@ -1276,6 +1379,7 @@ async function runSearch() {
   } else {
     results = search(query, topK, minScore);
   }
+  if (requestId !== state.searchSeq) return;
   state.lastResults = results;
 
   // 渲染保守回答（多轮对话时跳过，仅首次显示）
@@ -1283,7 +1387,7 @@ async function runSearch() {
   renderAnswer(answer);
 
   // 渲染结果（异步加载全文）
-  await renderResults(query, results);
+  await renderResults(query, results, requestId);
 }
 
 // ── 多轮对话 ──────────────────────────────────────
@@ -1348,6 +1452,10 @@ async function init() {
       localStorage.setItem(API_KEY_STORAGE, key);
       els.apiStatus.textContent = "已保存 ✓";
       setTimeout(() => { els.apiStatus.textContent = "已设置"; }, 2000);
+    } else {
+      state.apiKey = "";
+      localStorage.removeItem(API_KEY_STORAGE);
+      els.apiStatus.textContent = "已清除";
     }
   });
 
@@ -1362,19 +1470,19 @@ async function init() {
 
   // 搜索模式切换
   els.searchModeRadios.forEach((radio) => {
-    radio.addEventListener("change", () => {
+    radio.addEventListener("change", async () => {
       if (radio.checked) {
         state.searchMode = radio.value;
         // 语义模式需要 embeddings 数据
         if (state.searchMode === "semantic" && !hasSemanticSearch()) {
-          checkAndLoadEmbeddings().then((ok) => {
-            if (!ok) {
-              showToast("语义向量数据不可用，已切换回模糊搜索");
-              state.searchMode = "fuzzy";
-              const fuzzyRadio = document.querySelector('input[name="searchMode"][value="fuzzy"]');
-              if (fuzzyRadio) fuzzyRadio.checked = true;
-            }
-          });
+          showToast("首次使用语义检索，正在加载向量数据...");
+          const ok = await checkAndLoadEmbeddings();
+          if (!ok) {
+            showToast("语义向量数据不可用，已切换回模糊搜索");
+            state.searchMode = "fuzzy";
+            const fuzzyRadio = document.querySelector('input[name="searchMode"][value="fuzzy"]');
+            if (fuzzyRadio) fuzzyRadio.checked = true;
+          }
         }
         // 自动重新搜索
         if (els.queryInput.value.trim()) runSearch();
@@ -1399,7 +1507,8 @@ async function init() {
 
     // 执行搜索
     const topK = parseInt(els.topK.value, 10) || 8;
-    const minScore = parseFloat(els.minScore.value) || 0.08;
+    const parsedMinScore = parseFloat(els.minScore.value);
+    const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
 
     let results;
     if (state.searchMode === "semantic") {
@@ -1407,6 +1516,7 @@ async function init() {
     } else {
       results = search(q, topK, minScore);
     }
+    const requestId = ++state.searchSeq;
     state.lastResults = results;
 
     // 加载全文
@@ -1423,7 +1533,7 @@ async function init() {
     }
 
     // 更新原文片段区域（使 AI 回答中的引用编号可点击跳转）
-    await renderResults(q, results);
+    await renderResults(q, results, requestId);
 
     // 直接调用 AI 回答
     await generateAIAnswer(q, results);
@@ -1567,11 +1677,6 @@ async function startLoading() {
         `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
       els.loadingBar.parentElement.classList.add("done");
 
-      // 后台加载 embeddings
-      loadEmbeddingsFromCache().then((emb) => {
-        if (emb) state.embeddings = emb;
-      });
-
       setTimeout(() => {
         els.loadingOverlay.style.display = "none";
       }, 300);
@@ -1594,11 +1699,6 @@ async function startLoading() {
       els.loadingText.textContent =
         `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
       els.loadingBar.parentElement.classList.add("done");
-
-      // 后台加载 embeddings
-      loadEmbeddingsFromCache().then((emb) => {
-        if (emb) state.embeddings = emb;
-      });
 
       setTimeout(() => {
         els.loadingOverlay.style.display = "none";
@@ -1624,24 +1724,13 @@ async function startLoading() {
 
     const version = serverVersion || "unknown";
     state.index = await loadSearchIndexFromNetwork(version);
+    state.indexVersion = version;
 
     // 完成
     els.loadingBar.style.width = "100%";
     els.loadingText.textContent =
       `已就绪 — ${state.index.length.toLocaleString()} 个检索片段`;
     els.loadingBar.parentElement.classList.add("done");
-
-    // 后台加载 embeddings（首次访问：从网络下载）
-    loadEmbeddingsFromCache().then((emb) => {
-      if (emb) {
-        state.embeddings = emb;
-      } else {
-        // 缓存中没有，尝试从网络加载
-        loadEmbeddingsFromNetwork(version).then((netEmb) => {
-          if (netEmb) state.embeddings = netEmb;
-        }).catch(() => {});
-      }
-    });
 
     setTimeout(() => {
       els.loadingOverlay.style.display = "none";
@@ -1664,10 +1753,6 @@ async function startLoading() {
         els.loadingText.textContent =
           `已就绪（离线缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
         els.loadingBar.parentElement.classList.add("done");
-        // 加载缓存的 embeddings
-        loadEmbeddingsFromCache().then((emb) => {
-          if (emb) state.embeddings = emb;
-        });
         setTimeout(() => {
           els.loadingOverlay.style.display = "none";
         }, 300);
@@ -1700,4 +1785,22 @@ function showToast(msg) {
 }
 
 // ── 启动 ──────────────────────────────────────────
-init();
+if (typeof document !== "undefined") {
+  init();
+}
+
+// 仅供无 DOM 的 Node 回归测试使用；浏览器加载时不会进入该分支。
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    state,
+    tokenize,
+    makeGrams,
+    parseAndBuildIndex,
+    searchExact,
+    searchFuzzy,
+    searchSemantic,
+    selectDiverseResults,
+    renderAIText,
+    makeContextualSnippet,
+  };
+}
