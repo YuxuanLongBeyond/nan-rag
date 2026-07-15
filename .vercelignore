@@ -1,0 +1,14 @@
+# 运行时通过 Postgres 检索，不把大文件上传到 Vercel。
+search_index.json
+embeddings.bin
+corpus/
+rag/
+tests/
+data/
+data_new/
+scripts/
+db/
+.DS_Store
+CLAUDE.md
+*.epub
+*.docx

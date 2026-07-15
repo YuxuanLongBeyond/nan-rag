@@ -34,7 +34,7 @@
         <div class="progress-track">
           <div id="loadingBar" class="progress-fill" style="width:0%"></div>
         </div>
-        <p id="loadingHint" class="loading-hint">正在检查数据版本...</p>
+        <p id="loadingHint" class="loading-hint">正在连接服务端检索...</p>
       </div>
     </div>
 
@@ -104,7 +104,7 @@
             <span class="mode-label">搜索模式</span>
             <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy" checked> 模糊</label>
             <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
-            <label class="mode-option" title="首次使用需按需加载约 26 MB 语义向量"><input type="radio" name="searchMode" value="semantic"> 语义</label>
+            <label class="mode-option" title="扩大数据库候选范围并加强相近词组匹配，不下载向量文件"><input type="radio" name="searchMode" value="broad"> 宽泛</label>
           </div>
         </div>
 

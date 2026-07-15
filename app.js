@@ -1,9 +1,8 @@
 /**
  * 南怀瑾著作 RAG 检索系统
  *
- * 静态站点，客户端搜索 + DeepSeek AI 回答。
- * 数据预置（search_index.json + corpus/ 按作品分片），
- * 无需服务器，可部署到 GitHub Pages / Cloudflare Pages。
+ * Vercel 前端 + Postgres 服务端检索 + DeepSeek AI 回答。
+ * 浏览器只接收命中片段；GitHub Pages / 本地仍可使用静态降级模式。
  */
 
 // ── 常量 ──────────────────────────────────────────
@@ -12,6 +11,8 @@ const INDEX_URL = "search_index.json";
 const INDEX_VERSION_URL = "index_version.json";
 const MANIFEST_URL = "works_manifest.json";
 const EMBEDDINGS_URL = "embeddings.bin";
+const SEARCH_API_URL = "/api/search";
+const HEALTH_API_URL = "/api/health";
 const DB_NAME = "nan-rag-corpus";
 const DB_VERSION = 3;  // 升级：新增 embeddings store
 const STORE_WORKS = "works";
@@ -48,6 +49,10 @@ const state = {
   lastPrompt: "",
   searchSeq: 0,
   indexVersion: null,
+
+  // "remote"：Vercel + Postgres；"local"：旧静态索引降级模式
+  backendMode: "pending",
+  backendMeta: null,
 
   // 加载状态
   loading: { stage: "idle", current: 0, total: 0 },
@@ -663,6 +668,89 @@ async function loadManifest() {
   state.manifest = await resp.json();
 }
 
+function shouldAllowStaticFallback() {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  const host = window.location.hostname;
+  return params.get("local") === "1" ||
+    window.location.protocol === "file:" ||
+    host === "localhost" || host === "127.0.0.1" || host === "::1" ||
+    host.endsWith(".github.io");
+}
+
+function isSearchReady() {
+  return state.backendMode === "remote" || state.index.length > 0;
+}
+
+async function checkRemoteBackend() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const resp = await fetch(HEALTH_API_URL, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    let info = null;
+    try { info = await resp.json(); } catch { /* 非 API 静态站点 */ }
+    if (!resp.ok || !info?.ready) {
+      throw new Error(info?.error || `检索 API 返回 HTTP ${resp.status}`);
+    }
+    state.backendMode = "remote";
+    state.backendMeta = info;
+    state.indexVersion = info.version || null;
+    return info;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function searchRemote(query, topK, minScore) {
+  const resp = await fetch(SEARCH_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Copyright-Accepted": "1",
+    },
+    body: JSON.stringify({
+      query,
+      mode: state.searchMode,
+      topK,
+      minScore,
+    }),
+  });
+  let data = null;
+  try { data = await resp.json(); } catch { /* handled below */ }
+  if (!resp.ok) {
+    throw new Error(data?.error || `检索 API 返回 HTTP ${resp.status}`);
+  }
+  return (data?.results || []).map((result) => ({
+    chunk: {
+      id: result.id,
+      w: result.work,
+      c: result.chapter,
+      n: result.charCount,
+      p: result.preview,
+    },
+    text: result.text || result.preview || "",
+    sourceUrl: result.sourceUrl || "",
+    score: Number(result.score) || 0,
+  }));
+}
+
+async function ensureResultTexts(results) {
+  const missing = results.filter((result) => !result.text);
+  if (missing.length === 0 || state.backendMode === "remote") return;
+  const neededWorks = new Set(missing.map((result) => result.chunk.w));
+  await Promise.all([...neededWorks].map((work) => loadCorpusForWork(work).catch(() => {})));
+  for (const result of missing) {
+    const entry = state.textCache.get(result.chunk.w)?.get(result.chunk.id);
+    if (entry) {
+      result.text = entry.t || "";
+      result.sourceUrl = entry.u || "";
+    }
+  }
+}
+
 /**
  * 获取指定 work 的全文语料（从 IndexedDB 缓存或网络）。
  * 返回 Map<chunkId, {t: text, c: chapter_title, u: source_url}>
@@ -1192,7 +1280,7 @@ async function generateAIAnswer(query, results) {
 
 // ── 保守回答（无需 API） ─────────────────────────
 function buildConservativeAnswer(query, results, strictMode) {
-  if (state.index.length === 0) {
+  if (!isSearchReady()) {
     return {
       status: "资料库尚未加载完成。",
       html: "<p>请稍候，搜索索引正在加载中...</p>",
@@ -1271,15 +1359,8 @@ async function renderResults(query, results, requestId = state.searchSeq) {
     return;
   }
 
-  // 收集需要加载的 work
-  const neededWorks = new Set(results.map((r) => r.chunk.w));
-
-  // 并行加载所有需要的 corpus
-  await Promise.all(
-    [...neededWorks].map((w) =>
-      loadCorpusForWork(w).catch(() => {})
-    )
-  );
+  // 服务端结果已携带正文；只有静态降级模式才按作品加载 corpus。
+  await ensureResultTexts(results);
   if (requestId !== state.searchSeq) return;
 
   const fragment = document.createDocumentFragment();
@@ -1300,9 +1381,9 @@ async function renderResults(query, results, requestId = state.searchSeq) {
 
     // 查找全文
     const corpus = state.textCache.get(r.chunk.w);
-    let fullText = "";
-    let sourceUrl = "";
-    if (corpus) {
+    let fullText = r.text || "";
+    let sourceUrl = r.sourceUrl || "";
+    if (!fullText && corpus) {
       const entry = corpus.get(r.chunk.id);
       if (entry) {
         fullText = entry.t || "";
@@ -1360,8 +1441,8 @@ async function runSearch() {
   const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
   const strictMode = els.strictMode.checked;
 
-  if (state.index.length === 0) {
-    els.answerStatus.textContent = "搜索索引尚未加载完成";
+  if (!isSearchReady()) {
+    els.answerStatus.textContent = "检索服务尚未加载完成";
     return;
   }
   if (!query) {
@@ -1371,23 +1452,33 @@ async function runSearch() {
     return;
   }
 
-  // 根据搜索模式执行
-  let results;
-  if (state.searchMode === "semantic") {
-    els.answerStatus.textContent = "语义检索中...";
-    results = await searchSemantic(query, topK, minScore);
-  } else {
-    results = search(query, topK, minScore);
+  els.searchButton.disabled = true;
+  els.answerStatus.textContent = "正在检索服务端语料...";
+  try {
+    let results;
+    if (state.backendMode === "remote") {
+      results = await searchRemote(query, topK, minScore);
+    } else if (state.searchMode === "semantic") {
+      results = await searchSemantic(query, topK, minScore);
+    } else {
+      results = search(query, topK, minScore);
+    }
+    if (requestId !== state.searchSeq) return;
+    state.lastResults = results;
+
+    const answer = buildConservativeAnswer(query, results, strictMode);
+    renderAnswer(answer);
+    await renderResults(query, results, requestId);
+  } catch (error) {
+    if (requestId !== state.searchSeq) return;
+    state.lastResults = [];
+    els.answerStatus.textContent = "检索失败";
+    els.answerBox.innerHTML = `<p class="error-msg">${escapeHtml(error.message)}</p>`;
+    els.results.innerHTML = '<div class="empty">检索服务暂时不可用，请稍后重试</div>';
+    els.resultCount.textContent = "0 条";
+  } finally {
+    if (requestId === state.searchSeq) els.searchButton.disabled = false;
   }
-  if (requestId !== state.searchSeq) return;
-  state.lastResults = results;
-
-  // 渲染保守回答（多轮对话时跳过，仅首次显示）
-  const answer = buildConservativeAnswer(query, results, strictMode);
-  renderAnswer(answer);
-
-  // 渲染结果（异步加载全文）
-  await renderResults(query, results, requestId);
 }
 
 // ── 多轮对话 ──────────────────────────────────────
@@ -1473,8 +1564,9 @@ async function init() {
     radio.addEventListener("change", async () => {
       if (radio.checked) {
         state.searchMode = radio.value;
-        // 语义模式需要 embeddings 数据
-        if (state.searchMode === "semantic" && !hasSemanticSearch()) {
+        // 纯静态降级模式才需要把 embeddings 下载到浏览器。
+        if (state.backendMode !== "remote" &&
+            state.searchMode === "semantic" && !hasSemanticSearch()) {
           showToast("首次使用语义检索，正在加载向量数据...");
           const ok = await checkAndLoadEmbeddings();
           if (!ok) {
@@ -1501,44 +1593,36 @@ async function init() {
     if (!q) return;
     els.quickAskInput.value = "";
     els.quickAskBtn.disabled = true;
+    try {
+      els.queryInput.value = q;
+      const topK = parseInt(els.topK.value, 10) || 8;
+      const parsedMinScore = parseFloat(els.minScore.value);
+      const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
 
-    // 同步到主搜索框
-    els.queryInput.value = q;
-
-    // 执行搜索
-    const topK = parseInt(els.topK.value, 10) || 8;
-    const parsedMinScore = parseFloat(els.minScore.value);
-    const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
-
-    let results;
-    if (state.searchMode === "semantic") {
-      results = await searchSemantic(q, topK, minScore);
-    } else {
-      results = search(q, topK, minScore);
-    }
-    const requestId = ++state.searchSeq;
-    state.lastResults = results;
-
-    // 加载全文
-    els.quickAskBtn.textContent = "加载原文...";
-    els.answerStatus.textContent = "正在加载检索片段的全文...";
-    const neededWorks = new Set(results.map((r) => r.chunk.w));
-    await Promise.all([...neededWorks].map((w) => loadCorpusForWork(w).catch(() => {})));
-    for (const r of results) {
-      const corpus = state.textCache.get(r.chunk.w);
-      if (corpus) {
-        const entry = corpus.get(r.chunk.id);
-        if (entry) r.text = entry.t;
+      const requestId = ++state.searchSeq;
+      let results;
+      if (state.backendMode === "remote") {
+        results = await searchRemote(q, topK, minScore);
+      } else if (state.searchMode === "semantic") {
+        results = await searchSemantic(q, topK, minScore);
+      } else {
+        results = search(q, topK, minScore);
       }
+      state.lastResults = results;
+
+      // 服务端结果已经包含全文；静态降级模式按作品补齐。
+      els.quickAskBtn.textContent = "加载原文...";
+      els.answerStatus.textContent = "正在加载检索片段的全文...";
+      await ensureResultTexts(results);
+      await renderResults(q, results, requestId);
+      await generateAIAnswer(q, results);
+    } catch (error) {
+      els.answerStatus.textContent = "追问检索失败";
+      showToast(error.message);
+    } finally {
+      els.quickAskBtn.disabled = false;
+      els.quickAskBtn.textContent = "发送";
     }
-
-    // 更新原文片段区域（使 AI 回答中的引用编号可点击跳转）
-    await renderResults(q, results, requestId);
-
-    // 直接调用 AI 回答
-    await generateAIAnswer(q, results);
-    els.quickAskBtn.disabled = false;
-    els.quickAskBtn.textContent = "发送";
   }
 
   if (els.quickAskBtn) {
@@ -1555,22 +1639,12 @@ async function init() {
       showToast("请先搜索到相关片段");
       return;
     }
-    // 确保全文已加载
+    // 确保全文已加载（服务端检索结果通常已经携带）
     els.aiAnswerBtn.disabled = true;
     els.aiAnswerBtn.textContent = "正在加载原文...";
     els.answerStatus.textContent = "正在加载检索片段的全文...";
 
-    const neededWorks = new Set(state.lastResults.map((r) => r.chunk.w));
-    await Promise.all([...neededWorks].map((w) => loadCorpusForWork(w).catch(() => {})));
-
-    // 填充全文
-    for (const r of state.lastResults) {
-      const corpus = state.textCache.get(r.chunk.w);
-      if (corpus) {
-        const entry = corpus.get(r.chunk.id);
-        if (entry) r.text = entry.t;
-      }
-    }
+    await ensureResultTexts(state.lastResults);
 
     await generateAIAnswer(els.queryInput.value, state.lastResults);
   });
@@ -1624,119 +1698,48 @@ async function init() {
 
 async function startLoading() {
   try {
-    // Step 1: 并行加载 manifest + 检查索引版本
-    els.loadingText.textContent = "正在检查缓存...";
-    els.loadingBar.style.width = "3%";
+    els.loadingText.textContent = "正在连接检索服务...";
+    els.loadingHint.textContent = "语料保存在服务端，浏览器无需下载大索引";
+    els.loadingBar.style.width = "15%";
 
-    // 加载 manifest（小文件，很快）
-    const manifestPromise = loadManifest();
-
-    // 获取服务器端索引版本（< 100 字节，极快）
-    let serverVersion = null;
-    let serverIndexSize = null;
-    try {
-      const vResp = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
-      if (vResp.ok) {
-        const vInfo = await vResp.json();
-        serverVersion = vInfo.v;
-        serverIndexSize = vInfo.size;
-        // 动态更新加载提示，显示实际文件大小
-        if (serverIndexSize && els.loadingHint) {
-          const sizeMB = (serverIndexSize / 1024 / 1024).toFixed(1);
-          els.loadingHint.textContent =
-            `首次访问需下载索引（约 ${sizeMB} MB），之后自动从本地缓存加载，秒开`;
-        }
-      }
-    } catch (e) {
-      console.warn("无法获取索引版本信息:", e);
-    }
-
-    await manifestPromise;
+    await loadManifest();
     renderLibrary();
-    els.loadingBar.style.width = "8%";
+    els.loadingBar.style.width = "40%";
 
-    // Step 2: 尝试从 IndexedDB 缓存加载索引
-    let cachedVersion = null;
-    const cachedIndex = await loadSearchIndexFromCache();
+    let readyText;
+    try {
+      const info = await checkRemoteBackend();
+      readyText = `已就绪 — ${Number(info.chunks).toLocaleString()} 个服务端检索片段`;
+      els.loadingHint.textContent = "每次搜索只返回命中的少量原文片段";
+    } catch (remoteError) {
+      if (!shouldAllowStaticFallback()) throw remoteError;
+      console.warn("服务端检索不可用，进入静态降级模式:", remoteError);
+      state.backendMode = "local";
+      els.loadingText.textContent = "静态降级模式：正在加载本地索引...";
+      els.loadingHint.textContent = "本地或 GitHub Pages 模式仍会下载较大的静态索引";
 
-    if (cachedIndex && serverVersion) {
-      // 检查版本是否匹配
-      try {
-        const db = await openDB();
-        const cached = await getCachedIndex(db);
-        db.close();
-        if (cached) cachedVersion = cached.version;
-      } catch (e) { /* ignore */ }
+      const cachedIndex = await loadSearchIndexFromCache();
+      if (cachedIndex) {
+        state.index = cachedIndex;
+      } else {
+        let version = "unknown";
+        try {
+          const response = await fetch(INDEX_VERSION_URL, { cache: "no-cache" });
+          if (response.ok) version = (await response.json()).v || version;
+        } catch { /* 使用 unknown */ }
+        state.index = await loadSearchIndexFromNetwork(version);
+        state.indexVersion = version;
+      }
+      readyText = `已就绪（静态降级）— ${state.index.length.toLocaleString()} 个检索片段`;
     }
 
-    if (cachedIndex && cachedVersion === serverVersion) {
-      // ✅ 缓存命中且版本匹配 — 秒开！
-      state.index = cachedIndex;
-      els.loadingBar.style.width = "100%";
-      els.loadingText.textContent =
-        `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
-      els.loadingBar.parentElement.classList.add("done");
-
-      setTimeout(() => {
-        els.loadingOverlay.style.display = "none";
-      }, 300);
-
-      // 自动搜索 URL 参数
-      const params = new URLSearchParams(window.location.search);
-      const q = params.get("q");
-      if (q) {
-        els.queryInput.value = q;
-        await runSearch();
-      }
-      return;
-    }
-
-    if (cachedIndex) {
-      // 缓存存在但版本过期 — 先用缓存，后台更新
-      console.log(`索引版本过期（缓存: ${cachedVersion}, 服务器: ${serverVersion}），先用缓存，后台更新`);
-      state.index = cachedIndex;
-      els.loadingBar.style.width = "100%";
-      els.loadingText.textContent =
-        `已就绪（缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
-      els.loadingBar.parentElement.classList.add("done");
-
-      setTimeout(() => {
-        els.loadingOverlay.style.display = "none";
-      }, 300);
-
-      // 后台下载新版本
-      if (serverVersion) {
-        checkForIndexUpdate(cachedVersion).catch(() => {});
-      }
-
-      const params = new URLSearchParams(window.location.search);
-      const q = params.get("q");
-      if (q) {
-        els.queryInput.value = q;
-        await runSearch();
-      }
-      return;
-    }
-
-    // Step 3: 无缓存 — 从网络下载（首次访问）
-    els.loadingText.textContent = "首次使用，正在下载搜索索引...";
-    els.loadingBar.style.width = "10%";
-
-    const version = serverVersion || "unknown";
-    state.index = await loadSearchIndexFromNetwork(version);
-    state.indexVersion = version;
-
-    // 完成
     els.loadingBar.style.width = "100%";
-    els.loadingText.textContent =
-      `已就绪 — ${state.index.length.toLocaleString()} 个检索片段`;
+    els.loadingText.textContent = readyText;
     els.loadingBar.parentElement.classList.add("done");
-
     setTimeout(() => {
       els.loadingOverlay.style.display = "none";
-    }, 600);
+    }, 350);
 
-    // 自动搜索 URL 参数
     const params = new URLSearchParams(window.location.search);
     const q = params.get("q");
     if (q) {
@@ -1744,24 +1747,8 @@ async function startLoading() {
       await runSearch();
     }
   } catch (err) {
-    // 如果网络失败但 IndexedDB 有旧缓存，仍可使用
-    try {
-      const fallback = await loadSearchIndexFromCache();
-      if (fallback) {
-        state.index = fallback;
-        els.loadingBar.style.width = "100%";
-        els.loadingText.textContent =
-          `已就绪（离线缓存）— ${state.index.length.toLocaleString()} 个检索片段`;
-        els.loadingBar.parentElement.classList.add("done");
-        setTimeout(() => {
-          els.loadingOverlay.style.display = "none";
-        }, 300);
-        console.warn("网络加载失败，使用 IndexedDB 离线缓存");
-        return;
-      }
-    } catch (e2) { /* ignore */ }
-
-    els.loadingText.textContent = `加载失败：${err.message}`;
+    els.loadingText.textContent = `检索服务尚未就绪：${err.message}`;
+    els.loadingHint.textContent = "请在 Vercel 配置 DATABASE_URL，并先运行 npm run db:import";
     els.loadingBar.parentElement.classList.add("error");
     console.error("初始化失败:", err);
   }
