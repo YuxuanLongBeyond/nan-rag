@@ -7,10 +7,10 @@
     "dev": "npx vercel dev",
     "db:import": "node scripts/import-db.mjs",
     "test": "node --test tests/*.test.js tests/*.test.mjs",
-    "check": "node --check app.js && node --check api/search.mjs && node --check api/health.mjs && node --check server/search-core.mjs && node --check scripts/import-db.mjs"
+    "check": "node --check app.js && node --check api/search.mjs && node --check api/health.mjs && node --check server/database.mjs && node --check server/search-core.mjs && node --check scripts/import-db.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.0.0"

@@ -1,9 +1,13 @@
-import { neon } from "@neondatabase/serverless";
 import {
   buildSearchTerms,
   mergeCandidateSets,
   rankCandidates,
 } from "../server/search-core.mjs";
+import {
+  databaseErrorDetails,
+  isDatabaseTimeout,
+  runDatabaseQuery,
+} from "../server/database.mjs";
 
 const ALLOWED_MODES = new Set(["fuzzy", "exact", "broad", "semantic"]);
 
@@ -44,23 +48,24 @@ export default async function handler(request) {
 
   const startedAt = Date.now();
   try {
-    const sql = neon(process.env.DATABASE_URL);
-    let rows;
-    let terms;
-    if (mode === "exact") {
-      const exactQuery = query.replace(/[%_\\]+/g, " ").replace(/\s+/g, " ").trim();
-      if (!exactQuery) return json({ results: [], meta: { mode, candidateCount: 0 } });
-      terms = [exactQuery];
-      rows = await sql`SELECT * FROM rag_search_exact(${exactQuery}, ${Math.max(100, topK * 20)})`;
-    } else {
-      terms = buildSearchTerms(query);
-      if (terms.length === 0) return json({ results: [], meta: { mode, candidateCount: 0 } });
+    const { rows, terms } = await runDatabaseQuery(async (sql) => {
+      if (mode === "exact") {
+        const exactQuery = query.replace(/[%_\\]+/g, " ").replace(/\s+/g, " ").trim();
+        if (!exactQuery) return { rows: [], terms: [] };
+        return {
+          terms: [exactQuery],
+          rows: await sql`SELECT * FROM rag_search_exact(${exactQuery}, ${Math.max(100, topK * 20)})`,
+        };
+      }
+
+      const searchTerms = buildSearchTerms(query);
+      if (searchTerms.length === 0) return { rows: [], terms: [] };
       const perTerm = Math.max(60, Math.min(140, topK * 12));
       const resultSets = await sql.transaction(
-        terms.map((term) => sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
+        searchTerms.map((term) => sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
       );
-      rows = mergeCandidateSets(resultSets);
-    }
+      return { rows: mergeCandidateSets(resultSets), terms: searchTerms };
+    }, 15000);
 
     const ranked = rankCandidates(rows, query, mode, topK, minScore);
     const results = ranked.map(({ row, score }) => ({
@@ -84,7 +89,12 @@ export default async function handler(request) {
       },
     });
   } catch (error) {
-    console.error("RAG search failed", error);
-    return json({ error: "检索服务暂时不可用，请稍后重试" }, 503);
+    console.error("RAG search failed", databaseErrorDetails(error, startedAt));
+    return json({
+      code: isDatabaseTimeout(error) ? "DATABASE_TIMEOUT" : "DATABASE_UNAVAILABLE",
+      error: isDatabaseTimeout(error)
+        ? "数据库连接超时，请稍后重试"
+        : "检索服务暂时不可用，请稍后重试",
+    }, 503);
   }
 }

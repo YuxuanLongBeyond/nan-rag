@@ -684,7 +684,7 @@ function isSearchReady() {
 
 async function checkRemoteBackend() {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const resp = await fetch(HEALTH_API_URL, {
       cache: "no-store",
@@ -699,6 +699,11 @@ async function checkRemoteBackend() {
     state.backendMeta = info;
     state.indexVersion = info.version || null;
     return info;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error("连接检索 API 超时，请稍后重试");
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
