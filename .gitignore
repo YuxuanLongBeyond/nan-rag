@@ -2,8 +2,12 @@
 __pycache__/
 *.pyc
 
-# Data pipeline and generated corpus assets（仅本地使用，不上传）
-rag/
+# Data pipeline outputs and generated corpus assets（正文仅本地使用，不上传）
+rag/*
+!rag/build_static_corpus.py
+!rag/chunk_documents.py
+!rag/extract_epub_books.py
+!rag/extract_pdf_markdown.py
 corpus/
 search_index.json
 embeddings.bin

@@ -1,12 +1,12 @@
 # 南怀瑾著作 RAG 检索系统
 
-基于南怀瑾先生著作的全文检索与 AI 问答系统。当前版本使用 **Vercel 前端与 API + Neon Postgres**：70,417 条语料保存在服务端，浏览器只接收每次查询命中的少量片段，不再首次下载约 85 MB 的搜索索引或 26 MB 的向量文件。
+基于南怀瑾先生著作的全文检索与 AI 问答系统。当前版本使用 **Vercel 前端与 API + Neon Postgres**：本地清洗版包含 136 部作品、63,485 个片段，浏览器只接收每次查询命中的少量片段，不再首次下载约 78 MB 的搜索索引或 26 MB 的向量文件。
 
 ## 主要特性
 
 - **轻量首屏** — 只加载 HTML、CSS、JS、作品清单和 API 健康状态
 - **服务端中文检索** — PostgreSQL `pg_trgm` 候选召回，Node.js 2–4 字 n-gram 精排
-- **模糊、精确、宽泛模式** — 宽泛模式扩大候选范围，但不在浏览器下载向量
+- **模糊、精确、语义模式** — 语义模式用用户自己的 DeepSeek Key 扩展同义概念，再从 Neon 召回和精排原文，不下载大向量文件
 - **完整证据片段** — `/api/search` 直接返回命中的原文、作品、章节和来源链接
 - **AI 辅助回答** — 继续支持用户自己的 DeepSeek API Key 和流式回答
 - **严格出处模式** — 找不到依据时明确区分“当前资料未找到”和“作者从未说过”
@@ -29,7 +29,9 @@
              └─ 只返回前 3–20 个命中片段
 ```
 
-`search_index.json`、`embeddings.bin`、`corpus/` 和 `rag/` 是本地生成资产，已通过 `.gitignore` 和 `.vercelignore` 排除：不会提交到 GitHub，也不会进入 Vercel 部署包。线上检索只使用 Neon 中已经导入的数据。
+`search_index.json`、`embeddings.bin`、`corpus/`、原始数据和 `rag/` 下的 JSONL 是本地生成资产，已通过 `.gitignore` 和 `.vercelignore` 排除：不会提交到 GitHub，也不会进入 Vercel 部署包。Git 只保留可复现的清洗/分块脚本；线上检索只使用 Neon 中已经导入的数据。
+
+语义检索的 DeepSeek API Key 只保存在用户浏览器中。浏览器先向 DeepSeek 请求少量检索扩展词，再把问题和扩展词发送给本站 `/api/search`；Vercel 和 Neon 都不会收到或保存用户的 API Key。若没有 Key，界面会明确提示并保持模糊检索，不会把普通宽搜冒充语义检索。
 
 ## 第一次部署
 
@@ -62,7 +64,7 @@ DATABASE_URL_UNPOOLED=postgresql://USER:PASSWORD@DIRECT_HOST/DB?sslmode=require
 ```bash
 npm install
 
-# 先检查 70,417 个索引项能否关联到全文，不连接数据库
+# 先检查全部索引项能否关联到全文，不连接数据库
 npm run db:import -- --dry-run
 
 # 创建表、导入全文、清理旧版本并建立中文检索索引
@@ -104,24 +106,36 @@ python3 -m http.server 8080
 ## 更新语料
 
 ```bash
+# PDF 转 Markdown 数据：先解压，再生成清洗后的 documents/chunks
+unar -force-overwrite -o data/pdf/markdown data/pdf/data.rar
+python3 rag/extract_pdf_markdown.py --i-have-authorization
+python3 rag/chunk_documents.py \
+  --in rag/pdf_markdown_documents.jsonl \
+  --out rag/pdf_markdown_chunks.jsonl
+
 # 根据 rag/ 下现有 chunk 文件重建本地静态资产，不重复生成向量
 python3 rag/build_static_corpus.py --skip-embeddings
 
-# 检查并同步到 Postgres
+# 检查质量和导入关联，不连接数据库
+npm run corpus:audit
 npm run db:import -- --dry-run
+
+# 确认新 Neon 可连接后再同步到 Postgres
 npm run db:import
 ```
 
-数据库元信息中的版本取自 `index_version.json`，`/api/health` 会展示当前已导入的版本、作品数和片段数。
+PDF 批次会加入完整的《洞山指月》和《金粟轩纪年诗》；RAR 中《南师所讲呼吸法门精要》的 OCR 质量低于现有分章文本，因此只保留为原始数据源，不覆盖当前语料。数据库元信息中的版本取自 `index_version.json`，`/api/health` 会展示当前已导入的版本、作品数和片段数。
 
 ## 测试与检查
 
 ```bash
 npm test
 npm run check
+npm run corpus:audit
+npm run retrieval:eval
 ```
 
-测试覆盖浏览器旧检索逻辑、服务端查询词清洗、候选合并、精排、结果去重和 HTML 安全渲染。
+测试覆盖浏览器旧检索逻辑、DeepSeek 语义扩展、Key 隔离、服务端查询词清洗、跨表达召回、候选合并、精排、结果去重和 HTML 安全渲染。`retrieval:eval` 会遍历本地完整语料，分别验证精准、模糊、语义三种模式，因此需要先生成被 Git 忽略的 `corpus/`。
 
 ## 关键文件
 
@@ -132,12 +146,15 @@ npm run check
 | `server/search-core.mjs` | 查询清洗、候选合并和中文精排 |
 | `db/schema.sql` | Postgres 表、索引和检索函数 |
 | `scripts/import-db.mjs` | 将现有索引和按作品语料导入 Postgres |
+| `scripts/audit-corpus.mjs` | 检查乱码、格式残留、重复片段和索引一致性 |
+| `rag/extract_pdf_markdown.py` | 清洗 PDF Markdown 并按章节/诗作结构化 |
+| `rag/chunk_documents.py` | 按段落切分正文并生成带重叠的检索片段 |
 | `.gitignore` / `.vercelignore` | 防止本地语料和生成资产被上传 |
 | `app.js` | 前端检索、结果展示和静态降级逻辑 |
 
 ## 成本与容量提示
 
-当前全文约 102 MB，Postgres 还会占用表、WAL 和 `pg_trgm` 索引空间。Neon 免费项目目前提供 0.5 GB 存储，初期可能够用但余量有限；导入后应在 Neon 控制台确认实际占用。如果接近限制，可升级为按量付费，或下一步把正文移到 Cloudflare R2、数据库只保存检索字段。
+当前清洗后的本地全文 JSON 约 87 MB，Postgres 还会占用表、WAL 和 `pg_trgm` 索引空间。导入后应在 Neon 控制台确认实际占用；如果接近套餐限制，可升级为按量付费，或下一步把正文移到 Cloudflare R2、数据库只保存检索字段。
 
 ## 版权声明
 

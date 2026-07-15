@@ -22,6 +22,7 @@ const STORE_EMBEDDINGS = "embeddings";
 const COPYRIGHT_KEY = "nan-copyright-accepted";
 const API_KEY_STORAGE = "nan-deepseek-key";
 const API_URL = "https://api.deepseek.com/v1/chat/completions";
+const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CONVERSATION_MAX_TURNS = 10;
 const MAX_RESULTS_PER_SECTION = 2;
 const QUERY_STOPWORDS = new Set([
@@ -709,7 +710,7 @@ async function checkRemoteBackend() {
   }
 }
 
-async function searchRemote(query, topK, minScore) {
+async function searchRemote(query, topK, minScore, semanticTerms = []) {
   const resp = await fetch(SEARCH_API_URL, {
     method: "POST",
     headers: {
@@ -721,6 +722,7 @@ async function searchRemote(query, topK, minScore) {
       mode: state.searchMode,
       topK,
       minScore,
+      semanticTerms,
     }),
   });
   let data = null;
@@ -740,6 +742,93 @@ async function searchRemote(query, topK, minScore) {
     sourceUrl: result.sourceUrl || "",
     score: Number(result.score) || 0,
   }));
+}
+
+function parseSemanticTerms(content, query) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(content || ""));
+  } catch {
+    return [];
+  }
+  const values = Array.isArray(parsed) ? parsed : parsed?.terms;
+  if (!Array.isArray(values)) return [];
+
+  const normalizedQuery = String(query || "").normalize("NFKC").toLowerCase();
+  const terms = [];
+  for (const value of values) {
+    const term = String(value || "")
+      .normalize("NFKC")
+      .replace(/[^\u3400-\u9fffa-zA-Z0-9\s-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (term.length < 2 || term.length > 18) continue;
+    if (normalizedQuery.includes(term.toLowerCase()) || terms.includes(term)) continue;
+    terms.push(term);
+    if (terms.length >= 8) break;
+  }
+  return terms;
+}
+
+/**
+ * 用用户自己的 DeepSeek Key 把自然语言问题扩展为语料中可能出现的概念词。
+ * Key 只从浏览器直连 DeepSeek，不经过本站服务端。
+ */
+async function expandSemanticQuery(query) {
+  if (!state.apiKey) {
+    throw new Error("语义检索需要先在左侧填写 DeepSeek API Key");
+  }
+
+  const prompt = [
+    "请为南怀瑾著作语料检索扩展用户问题。",
+    "只给出 4 至 8 个原文中可能出现的相关概念、同义词、佛学术语或具体修持法门。",
+    "不要回答问题，不要添加解释，不要重复用户原词。",
+    '必须输出 JSON，例如：{"terms":["数息","安那般那","出入息"]}',
+    `用户问题：${query}`,
+  ].join("\n");
+
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      const resp = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${state.apiKey}`,
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: DEEPSEEK_MODEL,
+          messages: [
+            { role: "system", content: "你是中文 RAG 查询扩展器，只输出合法 JSON。" },
+            { role: "user", content: prompt },
+          ],
+          response_format: { type: "json_object" },
+          thinking: { type: "disabled" },
+          stream: false,
+          temperature: 0,
+          max_tokens: 180,
+        }),
+      });
+      if (!resp.ok) {
+        const details = await resp.text();
+        throw new Error(`DeepSeek API ${resp.status}: ${details.slice(0, 120)}`);
+      }
+      const data = await resp.json();
+      const terms = parseSemanticTerms(data.choices?.[0]?.message?.content, query);
+      if (terms.length > 0) return terms;
+      lastError = new Error("DeepSeek 未返回可用的语义扩展词");
+    } catch (error) {
+      lastError = controller.signal.aborted
+        ? new Error("语义扩展请求超时，请稍后重试")
+        : error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError || new Error("语义扩展失败，请稍后重试");
 }
 
 async function ensureResultTexts(results) {
@@ -915,20 +1004,15 @@ function searchFuzzy(query, topK, minScore) {
 }
 
 /**
- * 语义检索：调用 DeepSeek embedding API 获取 query vector，
- * 与预计算的 chunk embeddings 做余弦相似度计算，混合关键词分数。
- * 需要 API Key 和已加载的 embeddings.bin。
+ * 静态降级模式的语义精排。语义扩展词先提供跨表达召回；如果本地同时有
+ * 与索引版本一致的 embeddings.bin，再使用候选片段质心扩展近邻结果。
  */
-/**
- * 语义检索（增强版模糊检索）：更侧重 n-gram 语义相似度，弱化精确关键词匹配。
- * 如果预计算 embeddings 可用则同时使用向量相似度。
- * 完全在浏览器内运行，不需要 API Key。
- */
-async function searchSemantic(query, topK, minScore) {
+async function searchSemantic(query, topK, minScore, semanticTerms = []) {
   if (!query.trim() || state.index.length === 0) return [];
 
-  const queryTokens = tokenize(query);
-  const queryGrams = makeGrams(query);
+  const expandedQuery = [query, ...semanticTerms].join(" ");
+  const queryTokens = tokenize(expandedQuery);
+  const queryGrams = makeGrams(expandedQuery);
   const phrase = longestQueryToken(queryTokens);
   const N = state.index.length;
   const useEmbeddings = hasSemanticSearch();
@@ -1177,8 +1261,9 @@ async function generateAIAnswer(query, results) {
         Authorization: `Bearer ${state.apiKey}`,
       },
       body: JSON.stringify({
-        model: "deepseek-chat",
+        model: DEEPSEEK_MODEL,
         messages,
+        thinking: { type: "disabled" },
         stream: true,
         temperature: state.conversation.length > 2 ? 0.3 : 0.1,
         max_tokens: 2048,
@@ -1458,13 +1543,22 @@ async function runSearch() {
   }
 
   els.searchButton.disabled = true;
-  els.answerStatus.textContent = "正在检索服务端语料...";
+  els.answerStatus.textContent = state.searchMode === "semantic"
+    ? "正在理解问题并扩展语义..."
+    : "正在检索服务端语料...";
   try {
+    const semanticTerms = state.searchMode === "semantic"
+      ? await expandSemanticQuery(query)
+      : [];
+    if (requestId !== state.searchSeq) return;
+    if (semanticTerms.length > 0) {
+      els.answerStatus.textContent = `正在检索相关概念：${semanticTerms.slice(0, 4).join("、")}`;
+    }
     let results;
     if (state.backendMode === "remote") {
-      results = await searchRemote(query, topK, minScore);
+      results = await searchRemote(query, topK, minScore, semanticTerms);
     } else if (state.searchMode === "semantic") {
-      results = await searchSemantic(query, topK, minScore);
+      results = await searchSemantic(query, topK, minScore, semanticTerms);
     } else {
       results = search(query, topK, minScore);
     }
@@ -1569,16 +1663,20 @@ async function init() {
     radio.addEventListener("change", async () => {
       if (radio.checked) {
         state.searchMode = radio.value;
-        // 纯静态降级模式才需要把 embeddings 下载到浏览器。
+        if (state.searchMode === "semantic" && !state.apiKey) {
+          showToast("语义检索需要先设置 DeepSeek API Key");
+          state.searchMode = "fuzzy";
+          const fuzzyRadio = document.querySelector('input[name="searchMode"][value="fuzzy"]');
+          if (fuzzyRadio) fuzzyRadio.checked = true;
+          return;
+        }
+        // 纯静态降级模式可额外使用版本匹配的本地向量精排。
         if (state.backendMode !== "remote" &&
             state.searchMode === "semantic" && !hasSemanticSearch()) {
           showToast("首次使用语义检索，正在加载向量数据...");
           const ok = await checkAndLoadEmbeddings();
           if (!ok) {
-            showToast("语义向量数据不可用，已切换回模糊搜索");
-            state.searchMode = "fuzzy";
-            const fuzzyRadio = document.querySelector('input[name="searchMode"][value="fuzzy"]');
-            if (fuzzyRadio) fuzzyRadio.checked = true;
+            showToast("本地向量不可用，将使用 AI 语义扩展检索");
           }
         }
         // 自动重新搜索
@@ -1605,11 +1703,14 @@ async function init() {
       const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
 
       const requestId = ++state.searchSeq;
+      const semanticTerms = state.searchMode === "semantic"
+        ? await expandSemanticQuery(q)
+        : [];
       let results;
       if (state.backendMode === "remote") {
-        results = await searchRemote(q, topK, minScore);
+        results = await searchRemote(q, topK, minScore, semanticTerms);
       } else if (state.searchMode === "semantic") {
-        results = await searchSemantic(q, topK, minScore);
+        results = await searchSemantic(q, topK, minScore, semanticTerms);
       } else {
         results = search(q, topK, minScore);
       }
@@ -1791,6 +1892,9 @@ if (typeof module !== "undefined" && module.exports) {
     searchExact,
     searchFuzzy,
     searchSemantic,
+    parseSemanticTerms,
+    expandSemanticQuery,
+    searchRemote,
     selectDiverseResults,
     renderAIText,
     makeContextualSnippet,

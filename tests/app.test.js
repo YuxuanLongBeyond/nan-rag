@@ -16,6 +16,9 @@ const {
   selectDiverseResults,
   renderAIText,
   makeContextualSnippet,
+  parseSemanticTerms,
+  expandSemanticQuery,
+  searchRemote,
 } = require("../app.js");
 
 function useIndex(items) {
@@ -38,6 +41,46 @@ test("模糊检索可从自然语言问题召回核心术语", () => {
   ]);
   const results = searchFuzzy("南怀瑾如何理解安那般那？", 3, 0);
   assert.equal(results[0].chunk.id, "hit");
+});
+
+test("语义扩展只接受短文本数组并去重", () => {
+  const terms = parseSemanticTerms(
+    JSON.stringify({ terms: ["数息", "数息", "安那般那", "<script>", "心里很乱"] }),
+    "心里很乱时怎么办",
+  );
+  assert.deepEqual(terms, ["数息", "安那般那", "script"]);
+});
+
+test("语义模式用浏览器 Key 直连 DeepSeek，但站内搜索请求不携带 Key", async () => {
+  const previousFetch = global.fetch;
+  state.apiKey = "sk-only-in-browser";
+  state.searchMode = "semantic";
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (String(url).includes("deepseek.com")) {
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"terms":["数息","安那般那"]}' } }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ results: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const terms = await expandSemanticQuery("脑子停不下来怎么办");
+    await searchRemote("脑子停不下来怎么办", 8, 0.08, terms);
+    assert.deepEqual(terms, ["数息", "安那般那"]);
+    assert.equal(calls[0].options.headers.Authorization, "Bearer sk-only-in-browser");
+    const siteBody = JSON.parse(calls[1].options.body);
+    assert.deepEqual(siteBody.semanticTerms, terms);
+    assert(!JSON.stringify(calls[1]).includes("sk-only-in-browser"));
+  } finally {
+    global.fetch = previousFetch;
+    state.apiKey = "";
+    state.searchMode = "fuzzy";
+  }
 });
 
 test("精确检索覆盖旧版 60 字预览以后的正文", () => {

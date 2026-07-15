@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildSemanticSearchTerms,
   buildSearchTerms,
   mergeCandidateSets,
   normalizeQuery,
+  normalizeSemanticTerms,
   rankCandidates,
 } from "../server/search-core.mjs";
 
@@ -16,6 +18,23 @@ test("并列概念会拆成可召回的独立搜索词", () => {
   const terms = buildSearchTerms("中脉与修持");
   assert(terms.includes("中脉"));
   assert(terms.includes("修持"));
+});
+
+test("模糊查询会保留中文分词、尾部症状和领域单字概念", () => {
+  assert(buildSearchTerms("打坐时腿麻怎么办").includes("打坐"));
+  assert(buildSearchTerms("打坐时腿麻怎么办").includes("腿麻"));
+  assert(buildSearchTerms("孔子为什么强调仁").includes("仁"));
+});
+
+test("语义搜索词包含经过约束的跨表达概念", () => {
+  const normalized = normalizeSemanticTerms(
+    ["数息", " 安那般那 ", "数息", "x", "心里很乱"],
+    "心里很乱时怎样安定自己",
+  );
+  assert.deepEqual(normalized, ["数息", "安那般那"]);
+  const terms = buildSemanticSearchTerms("心里很乱时怎样安定自己", normalized);
+  assert(terms.includes("数息"));
+  assert(terms.includes("安那般那"));
 });
 
 test("多个数据库候选集合按 id 去重并保留较高分", () => {
@@ -38,4 +57,21 @@ test("服务端精排优先返回主题匹配片段并限制章节重复", () =>
   const ranked = rankCandidates(rows, "什么是安那般那", "fuzzy", 3, 0);
   assert.equal(ranked[0].row.id, "hit1");
   assert(ranked.some(({ row }) => row.id === "other"));
+});
+
+test("语义精排能召回与问题没有原词重合的相关修持法门", () => {
+  const rows = [
+    { id: "noise", work: "历史的经验", chapter: "用人", content: "历史人物与政治经验。", db_score: 0.9 },
+    { id: "semantic-hit", work: "定慧初修", chapter: "安般法门", content: "初学可以从数息入手，观察出入息而使心念渐定。", db_score: 0.8 },
+  ];
+  const ranked = rankCandidates(
+    rows,
+    "心里很乱时怎样安定自己",
+    "semantic",
+    2,
+    0,
+    ["数息", "安那般那", "出入息"],
+  );
+  assert.equal(ranked[0].row.id, "semantic-hit");
+  assert(ranked[0].score > ranked[1].score);
 });

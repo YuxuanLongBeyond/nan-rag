@@ -49,7 +49,7 @@
         <!-- API 设置 -->
         <div class="panel api-panel">
           <details>
-            <summary class="panel-summary">AI 回答设置</summary>
+            <summary class="panel-summary">AI 与语义检索设置</summary>
             <div class="api-config">
               <label for="apiKeyInput">DeepSeek API Key</label>
               <div class="api-key-row">
@@ -58,7 +58,7 @@
               </div>
               <p id="apiStatus" class="api-status"></p>
               <p class="api-hint">
-                密钥仅存于本地浏览器。每千次查询约 ¥4。
+                密钥仅存于本地浏览器，语义检索和 AI 回答会直接调用 DeepSeek 并按量计费。
                 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">获取 Key →</a>
               </p>
             </div>
@@ -104,7 +104,7 @@
             <span class="mode-label">搜索模式</span>
             <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy" checked> 模糊</label>
             <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
-            <label class="mode-option" title="扩大数据库候选范围并加强相近词组匹配，不下载向量文件"><input type="radio" name="searchMode" value="broad"> 宽泛</label>
+            <label class="mode-option" title="用 DeepSeek 理解问题并扩展相关概念，再从原文数据库召回；需要 API Key"><input type="radio" name="searchMode" value="semantic"> 语义</label>
           </div>
         </div>
 

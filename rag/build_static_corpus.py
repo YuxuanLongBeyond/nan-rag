@@ -18,6 +18,7 @@ import re
 import struct
 import sys
 import argparse
+import html
 from collections import OrderedDict
 
 # sentence-transformers 是可选依赖，仅用于生成语义向量
@@ -34,6 +35,7 @@ CORPUS_DIR = os.path.join(PROJECT_DIR, "corpus")
 
 CHUNK_FILES = [
     "epub_chunks.jsonl",       # EPUB 优先 — 最干净的全文数据
+    "pdf_markdown_chunks.jsonl",  # 人工审阅后的完整 PDF Markdown
     "nanhuaijin_quanji_chunks.jsonl",  # 南怀瑾全集 txt 补充（13部短篇开示）
     "new_works_chunks.jsonl",  # data_new 新增作品（对日抗战/素书/海航讲座）
     "nanhuaijin_chunks.jsonl",
@@ -84,6 +86,19 @@ WORK_NAME_ALIASES = {
     "瑜伽师地论讲座": "瑜伽师地论 声闻地讲录",
     "南《瑜伽师地论》": "瑜伽师地论 声闻地讲录",
     "人生的起点和终站": "人生的起点和终站",
+    # 同一内容的来源/版本别名。构建时只保留下面指定的优选来源。
+    "《楞严经》讲习录": "太湖楞严讲习录",
+    "禅秘要法（录音整理）": "《禅秘要法》讲座",
+    "宗镜录略讲（guoxue版）": "《宗镜录》略讲",
+}
+
+# 对高度重复的同书多来源，只保留校订更好或内容更完整的一份。
+PREFERRED_WORK_SOURCES = {
+    "太湖楞严讲习录": "docx_chunks.jsonl",
+    "《禅秘要法》讲座": "shixiu_chunks.jsonl",
+    "《宗镜录》略讲": "nanhuaijin_chunks.jsonl",
+    "洞山指月": "pdf_markdown_chunks.jsonl",
+    "金粟轩纪年诗": "pdf_markdown_chunks.jsonl",
 }
 
 
@@ -95,6 +110,51 @@ def _normalize_work_name(work):
 def _is_epub_covered(work):
     """检查作品是否已被 EPUB 覆盖（含名称变体）。"""
     return work in EPUB_WORKS or _normalize_work_name(work) in EPUB_WORKS
+
+
+def _clean_text(text):
+    """做保守的格式清洗，不擅自改写正文。"""
+    text = html.unescape(str(text or ""))
+    text = text.replace("\ufeff", "").replace("\u200b", "")
+    text = re.sub(r'!\[[^\]]*\]\([^\n)]*\)', '', text)
+    text = re.sub(r'<(?:br|/p|/div)>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]{1,200}>', '', text)
+    lines = []
+    for raw in text.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line = re.sub(r'[ \t\u3000]+', ' ', raw).strip()
+        line = re.sub(r'-{8,}', '', line).strip()
+        if re.fullmatch(r'[-_=·•—－]{6,}', line):
+            continue
+        if line:
+            lines.append(line)
+        elif lines and lines[-1] != '':
+            lines.append('')
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+
+
+def _is_boilerplate(text):
+    compact = re.sub(r'\s+', '', text)
+    if not compact:
+        return True
+    if len(compact) < 20:
+        return True
+    if compact.startswith('东方出版社南怀瑾作品'):
+        return True
+    if '图书在版编目' in compact and len(compact) < 800:
+        return True
+    if '版权所有·侵权必究' in compact and len(compact) < 500:
+        return True
+    return False
+
+
+def _clean_source_url(source_url):
+    """移除本机绝对路径，仅保留可复核的项目内相对来源。"""
+    value = str(source_url or '')
+    if value.startswith('file://'):
+        match = re.search(r'/(data(?:_new)?/.*)$', value)
+        if match:
+            return f"file://{match.group(1)}"
+    return value
 
 OUT_INDEX = os.path.join(PROJECT_DIR, "search_index.json")
 OUT_MANIFEST = os.path.join(PROJECT_DIR, "works_manifest.json")
@@ -127,6 +187,7 @@ def load_chunks():
     epub_works_seen = set()  # 从 EPUB 中已加载的作品
     stats = {}
     skipped_by_epub = {}     # 记录被 EPUB 跳过的统计
+    seen_texts = set()
 
     for fname in CHUNK_FILES:
         fpath = os.path.join(RAG_DIR, fname)
@@ -147,10 +208,16 @@ def load_chunks():
                 except json.JSONDecodeError:
                     continue
 
-                work = obj.get("work", "未知")
+                raw_work = obj.get("work", "未知")
+                work = _normalize_work_name(raw_work)
 
                 # 非 EPUB 来源：如果该作品已由 EPUB 覆盖，跳过
                 if not is_epub and _is_epub_covered(work):
+                    skipped_count += 1
+                    continue
+
+                preferred_source = PREFERRED_WORK_SOURCES.get(work)
+                if preferred_source and fname != preferred_source:
                     skipped_count += 1
                     continue
 
@@ -161,19 +228,29 @@ def load_chunks():
                     ch_no = obj.get("chapter_no", obj.get("chunk_no", 0))
                     chunk_id = f"{work}:{ch_no:04d}"
 
+                # 标准化字段
+                text = _clean_text(obj.get("text", ""))
+                if _is_boilerplate(text):
+                    skipped_count += 1
+                    continue
+
+                # 同一作品内的完全重复片段只保留优先级更高的来源。
+                text_key = (work, re.sub(r'\s+', '', text))
+                if text_key in seen_texts:
+                    skipped_count += 1
+                    continue
+
                 if chunk_id in seen_ids:
                     continue
                 seen_ids.add(chunk_id)
+                seen_texts.add(text_key)
 
                 if is_epub:
                     epub_works_seen.add(work)
 
-                # 标准化字段
-                text = obj.get("text", "")
-                work = obj.get("work", "未知作品")
                 chapter_title = obj.get("chapter_title", "")
-                source_url = obj.get("source_url", obj.get("chapter_url", ""))
-                char_count = obj.get("char_count", len(text))
+                source_url = _clean_source_url(obj.get("source_url", obj.get("chapter_url", "")))
+                char_count = len(text)
 
                 # 构建 searchText（用于客户端关键词匹配）
                 normalized = re.sub(r'\s+', ' ', text[:TEXT_PREVIEW_LEN]).strip()
@@ -234,9 +311,11 @@ def build_corpus(chunks):
     manifest = {}
     total_size = 0
 
+    expected_files = set()
     for work, work_chunks in by_work.items():
         safe_name = sanitize_filename(work)
         filename = f"{safe_name}.json"
+        expected_files.add(filename)
         filepath = os.path.join(CORPUS_DIR, filename)
 
         # 构建 corpus 记录: {id: {t: text, c: chapter_title, u: source_url}}
@@ -261,6 +340,12 @@ def build_corpus(chunks):
         }
 
         print(f"  ✓ corpus/{filename}: {len(work_chunks)} chunks, {file_size/1024:.0f} KB")
+
+    # 清掉上个版本遗留、已被优选来源替代的生成文件。
+    for filename in os.listdir(CORPUS_DIR):
+        if filename.endswith('.json') and filename not in expected_files:
+            os.remove(os.path.join(CORPUS_DIR, filename))
+            print(f"  - 移除旧生成文件 corpus/{filename}")
 
     return manifest, total_size
 

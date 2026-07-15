@@ -67,3 +67,23 @@ test("搜索接口未配置数据库时不泄漏内部信息", async () => {
     assert.equal((await response.json()).error, "服务端数据库尚未配置");
   });
 });
+
+test("语义模式不会在缺少语义扩展时静默降级为宽泛搜索", async () => {
+  const previous = process.env.DATABASE_URL;
+  process.env.DATABASE_URL = "postgresql://unused.invalid/test";
+  try {
+    const response = await searchHandler(new Request("https://example.test/api/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Copyright-Accepted": "1",
+      },
+      body: JSON.stringify({ query: "心里很乱怎么办", mode: "semantic" }),
+    }));
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "语义检索缺少有效的语义扩展词");
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
+  }
+});

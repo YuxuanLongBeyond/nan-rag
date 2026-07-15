@@ -1,6 +1,8 @@
 import {
+  buildSemanticSearchTerms,
   buildSearchTerms,
   mergeCandidateSets,
+  normalizeSemanticTerms,
   rankCandidates,
 } from "../server/search-core.mjs";
 import {
@@ -45,6 +47,10 @@ export async function searchHandler(request) {
   const minScore = Math.max(0, Math.min(1, Number(input?.minScore) || 0));
   if (!query) return json({ results: [], meta: { mode, candidateCount: 0 } });
   if (query.length > 200) return json({ error: "查询内容不能超过 200 字" }, 400);
+  const semanticTerms = normalizeSemanticTerms(input?.semanticTerms, query);
+  if (mode === "semantic" && semanticTerms.length === 0) {
+    return json({ error: "语义检索缺少有效的语义扩展词" }, 400);
+  }
 
   const startedAt = Date.now();
   try {
@@ -58,7 +64,9 @@ export async function searchHandler(request) {
         };
       }
 
-      const searchTerms = buildSearchTerms(query);
+      const searchTerms = mode === "semantic"
+        ? buildSemanticSearchTerms(query, semanticTerms)
+        : buildSearchTerms(query);
       if (searchTerms.length === 0) return { rows: [], terms: [] };
       const perTerm = Math.max(60, Math.min(140, topK * 12));
       const resultSets = await sql.transaction(
@@ -67,7 +75,7 @@ export async function searchHandler(request) {
       return { rows: mergeCandidateSets(resultSets), terms: searchTerms };
     }, 15000);
 
-    const ranked = rankCandidates(rows, query, mode, topK, minScore);
+    const ranked = rankCandidates(rows, query, mode, topK, minScore, semanticTerms);
     const results = ranked.map(({ row, score }) => ({
       id: row.id,
       work: row.work,
@@ -82,8 +90,9 @@ export async function searchHandler(request) {
     return json({
       results,
       meta: {
-        mode: mode === "semantic" ? "broad" : mode,
+        mode,
         terms,
+        semanticTerms: mode === "semantic" ? semanticTerms : undefined,
         candidateCount: rows.length,
         elapsedMs: Date.now() - startedAt,
       },
