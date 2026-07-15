@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import healthFunction, { healthHandler } from "../api/health.mjs";
 import searchFunction, { searchHandler } from "../api/search.mjs";
+import { databaseErrorCode } from "../server/database.mjs";
 
 async function withoutDatabase(callback) {
   const previous = process.env.DATABASE_URL;
@@ -17,6 +18,17 @@ async function withoutDatabase(callback) {
 test("API 使用 Vercel Web Handler 导出格式", () => {
   assert.equal(healthFunction.fetch, healthHandler);
   assert.equal(searchFunction.fetch, searchHandler);
+});
+
+test("数据库错误只暴露安全分类，不需要返回连接串", () => {
+  assert.equal(
+    databaseErrorCode(new Error("This connection is trying to access this endpoint from a blocked network.")),
+    "NETWORK_BLOCKED",
+  );
+  assert.equal(
+    databaseErrorCode(new Error("password authentication failed for user")),
+    "AUTHENTICATION_FAILED",
+  );
 });
 
 test("健康接口在未配置数据库时明确返回 503", async () => {

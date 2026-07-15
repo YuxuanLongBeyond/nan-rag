@@ -42,10 +42,27 @@ function safeMessage(error) {
     .slice(0, 500);
 }
 
+export function databaseErrorCode(error) {
+  if (error?.code === "DATABASE_TIMEOUT") return "DATABASE_TIMEOUT";
+  const message = `${error?.message || ""} ${error?.cause?.message || ""}`.toLowerCase();
+  if (/blocked network|not allowed to connect|ip.*not allowed/.test(message)) {
+    return "NETWORK_BLOCKED";
+  }
+  if (/password authentication failed|authentication failed|invalid password/.test(message)) {
+    return "AUTHENTICATION_FAILED";
+  }
+  if (/database .* does not exist/.test(message)) return "DATABASE_NOT_FOUND";
+  if (/relation .* does not exist|undefined table/.test(message)) return "SCHEMA_MISSING";
+  if (/fetch failed|enotfound|econnreset|econnrefused|network/.test(message)) {
+    return "NETWORK_ERROR";
+  }
+  return error?.code || error?.cause?.code || "DATABASE_UNAVAILABLE";
+}
+
 export function databaseErrorDetails(error, startedAt = Date.now()) {
   const connectionString = String(process.env.DATABASE_URL || "");
   return {
-    code: error?.code || error?.cause?.code || "DATABASE_UNAVAILABLE",
+    code: databaseErrorCode(error),
     elapsedMs: Date.now() - startedAt,
     region: process.env.VERCEL_REGION || "local",
     nodeVersion: process.version,

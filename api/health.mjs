@@ -34,7 +34,7 @@ export async function healthHandler() {
     const timedOut = isDatabaseTimeout(error);
     return json({
       ready: false,
-      code: timedOut ? "DATABASE_TIMEOUT" : "DATABASE_UNAVAILABLE",
+      code: details.code,
       error: timedOut ? "数据库连接超时" : "数据库连接或结构不可用",
       diagnostics: {
         elapsedMs: details.elapsedMs,

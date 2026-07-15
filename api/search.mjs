@@ -89,9 +89,10 @@ export async function searchHandler(request) {
       },
     });
   } catch (error) {
-    console.error("RAG search failed", databaseErrorDetails(error, startedAt));
+    const details = databaseErrorDetails(error, startedAt);
+    console.error("RAG search failed", details);
     return json({
-      code: isDatabaseTimeout(error) ? "DATABASE_TIMEOUT" : "DATABASE_UNAVAILABLE",
+      code: details.code,
       error: isDatabaseTimeout(error)
         ? "数据库连接超时，请稍后重试"
         : "检索服务暂时不可用，请稍后重试",
