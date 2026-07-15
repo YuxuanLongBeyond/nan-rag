@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import healthHandler from "../api/health.mjs";
-import searchHandler from "../api/search.mjs";
+import healthFunction, { healthHandler } from "../api/health.mjs";
+import searchFunction, { searchHandler } from "../api/search.mjs";
 
 async function withoutDatabase(callback) {
   const previous = process.env.DATABASE_URL;
@@ -13,6 +13,11 @@ async function withoutDatabase(callback) {
     else process.env.DATABASE_URL = previous;
   }
 }
+
+test("API 使用 Vercel Web Handler 导出格式", () => {
+  assert.equal(healthFunction.fetch, healthHandler);
+  assert.equal(searchFunction.fetch, searchHandler);
+});
 
 test("健康接口在未配置数据库时明确返回 503", async () => {
   await withoutDatabase(async () => {

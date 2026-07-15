@@ -12,14 +12,21 @@ export class DatabaseTimeoutError extends Error {
 export async function runDatabaseQuery(operation, timeoutMs = 8000) {
   const connectionString = String(process.env.DATABASE_URL || "").trim();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timer;
 
   try {
     const sql = neon(connectionString, {
       fetchOptions: { signal: controller.signal },
     });
-    return await operation(sql);
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new DatabaseTimeoutError(timeoutMs));
+      }, timeoutMs);
+    });
+    return await Promise.race([operation(sql), timeout]);
   } catch (error) {
+    if (error instanceof DatabaseTimeoutError) throw error;
     if (controller.signal.aborted) {
       throw new DatabaseTimeoutError(timeoutMs, { cause: error });
     }

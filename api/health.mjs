@@ -11,7 +11,7 @@ function json(data, status = 200) {
   });
 }
 
-export default async function handler() {
+export async function healthHandler() {
   if (!process.env.DATABASE_URL) {
     return json({ ready: false, error: "DATABASE_URL 尚未配置" }, 503);
   }
@@ -45,3 +45,6 @@ export default async function handler() {
     }, 503);
   }
 }
+
+// Vercel Web Handler 格式：返回 Web Response 时必须通过 fetch 导出。
+export default { fetch: healthHandler };

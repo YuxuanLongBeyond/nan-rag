@@ -21,7 +21,7 @@ function json(data, status = 200) {
   });
 }
 
-export default async function handler(request) {
+export async function searchHandler(request) {
   if (request.method !== "POST") {
     return json({ error: "仅支持 POST 请求" }, 405);
   }
@@ -98,3 +98,6 @@ export default async function handler(request) {
     }, 503);
   }
 }
+
+// Vercel Web Handler 格式：返回 Web Response 时必须通过 fetch 导出。
+export default { fetch: searchHandler };
