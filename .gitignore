@@ -2,11 +2,15 @@
 __pycache__/
 *.pyc
 
-# Data pipeline（仅本地使用，不上传）
+# Data pipeline and generated corpus assets（仅本地使用，不上传）
 rag/
+corpus/
+search_index.json
+embeddings.bin
 
 # Source docx files (copyrighted, local only)
 data/
+data_new/
 
 # OS
 .DS_Store

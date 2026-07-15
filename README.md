@@ -10,7 +10,7 @@
 - **完整证据片段** — `/api/search` 直接返回命中的原文、作品、章节和来源链接
 - **AI 辅助回答** — 继续支持用户自己的 DeepSeek API Key 和流式回答
 - **严格出处模式** — 找不到依据时明确区分“当前资料未找到”和“作者从未说过”
-- **静态降级** — GitHub Pages、`localhost` 或 URL 加 `?local=1` 时仍可使用旧的浏览器索引
+- **可选静态降级** — 本地已有静态资产时，`localhost` 或 URL 加 `?local=1` 可验证旧浏览器索引
 
 ## 运行架构
 
@@ -29,7 +29,7 @@
              └─ 只返回前 3–20 个命中片段
 ```
 
-`search_index.json`、`embeddings.bin`、`corpus/` 和 `rag/` 已通过 `.vercelignore` 排除，不会进入 Vercel 部署包。
+`search_index.json`、`embeddings.bin`、`corpus/` 和 `rag/` 是本地生成资产，已通过 `.gitignore` 和 `.vercelignore` 排除：不会提交到 GitHub，也不会进入 Vercel 部署包。线上检索只使用 Neon 中已经导入的数据。
 
 ## 第一次部署
 
@@ -57,6 +57,8 @@ DATABASE_URL_UNPOOLED=postgresql://USER:PASSWORD@DIRECT_HOST/DB?sslmode=require
 
 ### 2. 导入语料
 
+导入前需要在本地生成或保留 `search_index.json`、`corpus/`、`works_manifest.json` 和 `index_version.json`。其中全文、索引和向量文件不进入 Git 仓库。
+
 ```bash
 npm install
 
@@ -81,14 +83,14 @@ npm run dev
 curl http://localhost:3000/api/health
 ```
 
-纯静态调试仍可使用：
+如果本地仍保留完整静态资产，可以使用纯静态调试：
 
 ```bash
 python3 -m http.server 8080
 # 打开 http://localhost:8080/?local=1
 ```
 
-静态调试模式会继续加载大索引，只用于降级验证。
+静态调试模式会继续加载大索引，只用于本地降级验证；从 GitHub 新克隆的仓库默认不包含这些资产。
 
 ### 4. 部署到 Vercel
 
@@ -130,7 +132,7 @@ npm run check
 | `server/search-core.mjs` | 查询清洗、候选合并和中文精排 |
 | `db/schema.sql` | Postgres 表、索引和检索函数 |
 | `scripts/import-db.mjs` | 将现有索引和按作品语料导入 Postgres |
-| `.vercelignore` | 防止大语料被上传到 Vercel |
+| `.gitignore` / `.vercelignore` | 防止本地语料和生成资产被上传 |
 | `app.js` | 前端检索、结果展示和静态降级逻辑 |
 
 ## 成本与容量提示
