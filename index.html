@@ -141,14 +141,14 @@
             <button id="quickAskBtn" type="button">发送</button>
           </div>
           <div id="answerBox" class="answer-box">
-            <p>检索后可直接查看资料依据；点击“AI 回答”可生成带引用的回答（需 API Key）。</p>
+            <p>检索后可展开下方“本次检索结果”；点击“AI 回答”可生成带引用的回答（需 API Key）。</p>
           </div>
         </section>
 
-        <!-- 检索依据：默认折叠，避免与回答中的引用依据重复占位 -->
-        <details class="results-wrap" aria-label="检索依据">
+        <!-- 仅用于生成回答前浏览当前一次检索；进入对话后由每轮“引用依据”取代 -->
+        <details id="retrievalResultsWrap" class="results-wrap" aria-label="本次检索结果">
           <summary class="section-head">
-            <span class="results-title">检索依据</span>
+            <span class="results-title">本次检索结果</span>
             <span id="resultCount">0 条</span>
           </summary>
           <div id="results" class="results"></div>

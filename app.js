@@ -178,6 +178,7 @@ function bindEls() {
     quickAskBtn: document.getElementById("quickAskBtn"),
 
     // 结果
+    retrievalResultsWrap: document.getElementById("retrievalResultsWrap"),
     resultCount: document.getElementById("resultCount"),
     results: document.getElementById("results"),
 
@@ -1656,6 +1657,8 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
     prompt: currentPrompt,
     results: resultSnapshots,
   });
+  // 对话中的每轮回答已经保存自己的引用依据，不再重复显示会被后续检索覆盖的结果区。
+  updateConversationUI();
 
   // 显示用户问题气泡
   if (convContainer) {
@@ -2101,7 +2104,7 @@ function startNewConversation() {
   state.conversation = [];
   els.answerBox.style.display = "";
   els.answerBox.innerHTML =
-    '<p>检索结果将在此显示。点击"AI 回答"基于原文片段生成回答（需 API Key），或点击"复制提示词"手动粘贴到任意 LLM。</p>';
+    '<p>检索后可展开下方“本次检索结果”。点击“AI 回答”可基于原文片段生成带引用的回答（需 API Key）。</p>';
   els.answerStatus.textContent = "新对话已开始";
 
   // 清空对话列表
@@ -2124,6 +2127,9 @@ function updateConversationUI() {
   }
   if (els.quickAskBar) {
     els.quickAskBar.style.display = hasHistory ? "flex" : "none";
+  }
+  if (els.retrievalResultsWrap) {
+    els.retrievalResultsWrap.hidden = hasHistory;
   }
 }
 
