@@ -5,9 +5,10 @@
 ## 主要特性
 
 - **轻量首屏** — 只加载 HTML、CSS、JS、作品清单和 API 健康状态
-- **服务端中文检索** — PostgreSQL `pg_trgm` 候选召回，Node.js 2–4 字 n-gram 精排
-- **智能语义、模糊、精确模式** — 智能语义无需 Key 即可处理常见日常说法；设置用户自己的 DeepSeek Key 后，会进一步扩展传统术语和同义概念
-- **多路召回与语义精排** — 综合原问题、扩展概念、命中线索数量和章节多样性排序，并围绕实际命中概念展示摘要
+- **统一混合检索** — 默认融合 `pg_trgm`、查询扩展和 `pgvector` 向量召回，用户无需选择模式
+- **真正的问题向量** — 配置站点 `HF_TOKEN` 后，服务端使用与语料一致的 384 维多语言 MiniLM 模型；未配置时明确降级为语义邻域补召回
+- **精确原句核对** — “仅查完整原句”放在检索设置中，不干扰普通自然语言提问
+- **多路召回与精排** — 综合问题向量、扩展概念、字面命中、章节标题和来源多样性排序
 - **完整证据片段** — `/api/search` 直接返回命中的原文、作品、章节和来源链接
 - **AI 辅助回答** — 继续支持用户自己的 DeepSeek API Key 和流式回答
 - **严格出处模式** — 找不到依据时明确区分“当前资料未找到”和“作者从未说过”
@@ -25,14 +26,14 @@
        Vercel Function
              │
              ▼
-       Neon Postgres + pg_trgm
+       Neon Postgres + pg_trgm + pgvector
              │
              └─ 只返回前 3–20 个命中片段
 ```
 
 `search_index.json`、`embeddings.bin`、`corpus/`、原始数据和 `rag/` 下的 JSONL 是本地生成资产，已通过 `.gitignore` 和 `.vercelignore` 排除：不会提交到 GitHub，也不会进入 Vercel 部署包。Git 只保留可复现的清洗/分块脚本；线上检索只使用 Neon 中已经导入的数据。
 
-语义检索的 DeepSeek API Key 只保存在用户浏览器中。没有 Key 时，浏览器会用本地的日常表达与原著术语映射做基础语义扩展；有 Key 时，再向 DeepSeek 请求更贴合当前问题的扩展词。本站 `/api/search` 只收到问题和扩展词，Vercel 和 Neon 都不会收到或保存用户的 API Key。模型请求失败或没有可靠扩展结果时，会透明降级为增强模糊检索。
+DeepSeek API Key 仍只保存在用户浏览器中，用于生成回答和可选的查询术语扩展，不会发送到本站服务端。真正的查询向量由 Vercel 使用站点自己的 `HF_TOKEN` 生成；该 Token 只放在 Vercel 环境变量中。若未配置或服务暂时不可用，检索会使用最强字面命中片段的向量质心扩展语义近邻，并在响应元数据中标明降级状态。
 
 ## 第一次部署
 
@@ -99,7 +100,7 @@ python3 -m http.server 8080
 
 1. 将代码推送到 GitHub。
 2. 在 Vercel 新建项目并导入该仓库。
-3. 在 **Project Settings → Environment Variables** 添加 pooled `DATABASE_URL`，Production、Preview、Development 按需勾选；`DATABASE_URL_UNPOOLED` 只在本地导入，不必放到 Vercel。
+3. 在 **Project Settings → Environment Variables** 添加 pooled `DATABASE_URL`；再添加具有 Inference Providers 权限的 `HF_TOKEN`，用于生成问题向量。两者都应用到 Production、Preview、Development；`DATABASE_URL_UNPOOLED` 只在本地导入，不必放到 Vercel。
 4. 触发一次重新部署；环境变量不会自动应用到旧部署。
 5. 访问 `https://你的项目.vercel.app/api/health`，确认返回 `"ready": true`。
 6. 先用免费的 `.vercel.app` 地址完成检索测试，再购买或绑定正式域名。
@@ -114,16 +115,22 @@ python3 rag/chunk_documents.py \
   --in rag/pdf_markdown_documents.jsonl \
   --out rag/pdf_markdown_chunks.jsonl
 
-# 根据 rag/ 下现有 chunk 文件重建本地静态资产，不重复生成向量
+# 根据 rag/ 下现有 chunk 文件重建本地静态资产
 python3 rag/build_static_corpus.py --skip-embeddings
+
+# 语料确认后，按当前索引顺序重建匹配的向量（不改变语料版本）
+python3 rag/build_static_corpus.py --embeddings-only
 
 # 检查质量和导入关联，不连接数据库
 npm run corpus:audit
 npm run db:import -- --dry-run
 
-# 确认新 Neon 可连接后再同步到 Postgres
+# 确认新 Neon 可连接后同步全文和向量
 npm run db:import
 ```
+
+如果语料版本完全没有变化、只是重算了同一批片段的向量，可以使用
+`npm run db:import -- --embeddings-only`，避免重复上传全文。导入器会核对线上版本和片段数量，不一致时拒绝执行。
 
 PDF 批次会加入完整的《洞山指月》和《金粟轩纪年诗》；RAR 中《南师所讲呼吸法门精要》的 OCR 质量低于现有分章文本，因此只保留为原始数据源，不覆盖当前语料。数据库元信息中的版本取自 `index_version.json`，`/api/health` 会展示当前已导入的版本、作品数和片段数。
 
@@ -144,7 +151,8 @@ npm run retrieval:eval
 |---|---|
 | `api/search.mjs` | Vercel 检索 API |
 | `api/health.mjs` | 数据库就绪状态 |
-| `server/search-core.mjs` | 查询清洗、候选合并和中文精排 |
+| `server/search-core.mjs` | 查询清洗、混合候选合并和中文精排 |
+| `server/embeddings.mjs` | 服务端问题向量生成、校验与短期缓存 |
 | `db/schema.sql` | Postgres 表、索引和检索函数 |
 | `scripts/import-db.mjs` | 将现有索引和按作品语料导入 Postgres |
 | `scripts/audit-corpus.mjs` | 检查乱码、格式残留、重复片段和索引一致性 |
@@ -155,7 +163,7 @@ npm run retrieval:eval
 
 ## 成本与容量提示
 
-当前清洗后的本地全文 JSON 约 87 MB，Postgres 还会占用表、WAL 和 `pg_trgm` 索引空间。导入后应在 Neon 控制台确认实际占用；如果接近套餐限制，可升级为按量付费，或下一步把正文移到 Cloudflare R2、数据库只保存检索字段。
+当前清洗后的本地全文 JSON 约 87 MB。数据库使用空间更紧凑的 GiST trigram 索引和 `halfvec(384)`；导入脚本会在向量写完后建立 HNSW 索引。导入后仍应在 Neon 控制台确认实际占用；若接近套餐限制，可升级为按量付费，或把正文移到 Cloudflare R2、数据库只保存检索字段。
 
 ## 版权声明
 

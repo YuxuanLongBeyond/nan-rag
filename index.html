@@ -87,7 +87,7 @@
           <label for="queryInput">问题或关键词</label>
           <div class="search-row">
             <input id="queryInput" type="search" placeholder="例如：如何理解“安那般那”？什么是“十六特胜”？" />
-            <button id="searchButton" type="button">智能检索</button>
+            <button id="searchButton" type="button">检索</button>
           </div>
           <div class="query-examples" aria-label="示例问题">
             <span>试试：</span>
@@ -95,13 +95,7 @@
             <button type="button" data-query="打坐时腿麻应该怎么办？">打坐腿麻</button>
             <button type="button" data-query="人去世以后会经历什么？">生死问题</button>
           </div>
-          <div class="search-modes">
-            <span class="mode-label">搜索模式</span>
-            <label class="mode-option" title="理解日常说法并查找原著中的相关概念"><input type="radio" name="searchMode" value="semantic" checked> 智能语义</label>
-            <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy"> 模糊</label>
-            <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
-          </div>
-          <p id="modeHelp" class="mode-help">推荐用于自然语言提问；无需 Key 可使用基础语义，设置 Key 后自动增强。</p>
+          <p id="modeHelp" class="mode-help">自动融合关键词、模糊匹配与语义召回，直接输入问题即可。</p>
           <div id="searchInsight" class="search-insight" aria-live="polite"></div>
           <details class="advanced-controls">
             <summary>检索设置</summary>
@@ -117,6 +111,10 @@
               <label class="toggle">
                 <input id="strictMode" type="checkbox" checked />
                 严格出处模式
+              </label>
+              <label class="toggle">
+                <input id="exactSearch" type="checkbox" />
+                仅查完整原句
               </label>
             </div>
           </details>

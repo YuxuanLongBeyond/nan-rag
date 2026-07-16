@@ -4,6 +4,7 @@ import {
   buildSemanticSearchTerms,
   buildSearchTerms,
   mergeCandidateSets,
+  mergeHybridCandidates,
   normalizeQuery,
   normalizeSemanticTerms,
   rankCandidates,
@@ -46,6 +47,18 @@ test("多个数据库候选集合按 id 去重并保留较高分", () => {
   assert.equal(merged.find((row) => row.id === "a").db_score, 0.8);
   assert.equal(merged.find((row) => row.id === "a").term_hits, 2);
   assert.equal(merged.find((row) => row.id === "b").term_hits, 1);
+});
+
+test("混合召回会合并字面与向量候选并保留两种信号", () => {
+  const merged = mergeHybridCandidates(
+    [[{ id: "a", db_score: 0.9 }, { id: "b", db_score: 0.6 }]],
+    [{ id: "a", db_score: 0.72 }, { id: "c", db_score: 0.81 }],
+  );
+  assert.equal(merged.length, 3);
+  assert.equal(merged.find((row) => row.id === "a").db_score, 0.9);
+  assert.equal(merged.find((row) => row.id === "a").vector_score, 0.72);
+  assert.equal(merged.find((row) => row.id === "c").vector_score, 0.81);
+  assert.equal(merged.find((row) => row.id === "c").term_hits, 0);
 });
 
 test("服务端精排优先返回主题匹配片段并限制章节重复", () => {

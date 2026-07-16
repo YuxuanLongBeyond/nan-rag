@@ -156,6 +156,7 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
     const text = `${row.work || ""} ${row.chapter || ""} ${row.content || ""}`.toLowerCase();
     const compact = text.replace(/\s+/g, "");
     const dbScore = Math.max(0, Math.min(1, Number(row.db_score) || 0));
+    const vectorScore = Math.max(0, Math.min(1, Number(row.vector_score) || 0));
 
     if (mode === "exact") {
       return { row, score: Math.max(0.2, dbScore) };
@@ -207,9 +208,16 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
     if (mode === "semantic") {
       const termHits = Number(row.term_hits) || 0;
       const recallBreadth = Math.min(1, Math.max(0, termHits - 1) / 3);
-      score = dbScore * 0.10 + keywordScore * 0.08 + ngramScore * 0.04 +
-        semanticScore * 0.56 + semanticBreadth * 0.08 + recallBreadth * 0.05 +
-        semanticTitleScore * 0.07 + titleScore * 0.02 + exactBoost;
+      if (vectorScore > 0) {
+        score = vectorScore * 0.46 + semanticScore * 0.28 + dbScore * 0.05 +
+          keywordScore * 0.05 + ngramScore * 0.03 + semanticBreadth * 0.04 +
+          recallBreadth * 0.03 + semanticTitleScore * 0.04 + titleScore * 0.02 +
+          exactBoost;
+      } else {
+        score = dbScore * 0.10 + keywordScore * 0.08 + ngramScore * 0.04 +
+          semanticScore * 0.56 + semanticBreadth * 0.08 + recallBreadth * 0.05 +
+          semanticTitleScore * 0.07 + titleScore * 0.02 + exactBoost;
+      }
     } else if (mode === "broad") {
       score = dbScore * 0.18 + keywordScore * 0.22 + focusScore * 0.22 +
         ngramScore * 0.25 + titleScore * 0.08 + exactBoost;
@@ -264,6 +272,25 @@ export function mergeCandidateSets(resultSets) {
         current.term_hits = (current.term_hits || 0) + 1;
         seenInSet.add(row.id);
       }
+    }
+  }
+  return [...merged.values()];
+}
+
+export function mergeHybridCandidates(lexicalSets, vectorRows = []) {
+  const merged = new Map(mergeCandidateSets(lexicalSets).map((row) => [row.id, row]));
+  for (const row of vectorRows) {
+    const vectorScore = Math.max(0, Math.min(1,
+      Number(row.vector_score ?? row.db_score) || 0));
+    const previous = merged.get(row.id);
+    if (previous) {
+      previous.vector_score = Math.max(Number(previous.vector_score) || 0, vectorScore);
+    } else {
+      merged.set(row.id, {
+        ...row,
+        vector_score: vectorScore,
+        term_hits: 0,
+      });
     }
   }
   return [...merged.values()];

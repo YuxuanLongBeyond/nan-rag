@@ -409,6 +409,56 @@ def build_embeddings(chunks):
     return dim, buffer, float_min, float_max
 
 
+def load_embedding_rows_from_static_assets():
+    """按 search_index.json 的顺序读取全文，供仅重建向量时使用。"""
+    with open(OUT_INDEX, 'r', encoding='utf-8') as f:
+        search_index = json.load(f)
+    with open(OUT_MANIFEST, 'r', encoding='utf-8') as f:
+        manifest = json.load(f)
+
+    corpus_cache = {}
+    rows = []
+    for item in search_index:
+        work = item['w']
+        if work not in corpus_cache:
+            info = manifest.get(work)
+            if not info:
+                raise RuntimeError(f"works_manifest.json 缺少作品：{work}")
+            corpus_path = os.path.join(PROJECT_DIR, info['file'])
+            with open(corpus_path, 'r', encoding='utf-8') as f:
+                corpus_cache[work] = json.load(f)
+        entry = corpus_cache[work].get(item['id'])
+        if not entry:
+            raise RuntimeError(f"语料缺少索引片段：{item['id']}")
+        rows.append({
+            'work': work,
+            'chapter_title': item.get('c') or entry.get('c') or '',
+            'text': entry.get('t') or item.get('p') or '',
+        })
+    return rows
+
+
+def write_embeddings_and_metadata(chunks, version):
+    emb_result = build_embeddings(chunks)
+    if not emb_result:
+        return None
+    dim, emb_buffer, _emb_min, _emb_max = emb_result
+    temp_path = f"{OUT_EMBEDDINGS}.tmp"
+    with open(temp_path, 'wb') as f:
+        f.write(emb_buffer)
+    os.replace(temp_path, OUT_EMBEDDINGS)
+    emb_size = os.path.getsize(OUT_EMBEDDINGS)
+    version["embeddings"] = {
+        "dim": dim,
+        "size": emb_size,
+        "count": len(chunks),
+        "model": EMBEDDING_MODEL,
+    }
+    with open(OUT_VERSION, 'w', encoding='utf-8') as f:
+        json.dump(version, f, ensure_ascii=False, separators=(',', ':'))
+    return dim, emb_size
+
+
 def main():
     parser = argparse.ArgumentParser(description="构建静态 RAG 语料与检索索引")
     parser.add_argument(
@@ -416,11 +466,38 @@ def main():
         action="store_true",
         help="保留现有 embeddings.bin，不重新运行耗时的向量模型",
     )
+    parser.add_argument(
+        "--embeddings-only",
+        action="store_true",
+        help="保持当前语料版本不变，仅按现有索引顺序重建 embeddings.bin",
+    )
     args = parser.parse_args()
+
+    if args.skip_embeddings and args.embeddings_only:
+        parser.error("--skip-embeddings 与 --embeddings-only 不能同时使用")
 
     print("=" * 60)
     print("南怀瑾 RAG 静态语料库构建工具")
     print("=" * 60)
+
+    if args.embeddings_only:
+        print("\n[1/2] 按当前索引加载语料...")
+        chunks = load_embedding_rows_from_static_assets()
+        with open(OUT_VERSION, 'r', encoding='utf-8') as f:
+            version = json.load(f)
+        if len(chunks) != int(version.get('chunks') or 0):
+            raise RuntimeError(
+                f"索引数量 {len(chunks)} 与版本文件 {version.get('chunks')} 不一致"
+            )
+        print(f"  ✓ 已加载 {len(chunks):,} 个片段，语料版本仍为 {version.get('v')}")
+        print("\n[2/2] 重建语义向量...")
+        written = write_embeddings_and_metadata(chunks, version)
+        if not written:
+            sys.exit(1)
+        dim, emb_size = written
+        print(f"  ✓ embeddings.bin: {dim} 维, {len(chunks)} 条, {emb_size/1024:.0f} KB")
+        print("  ✓ 已写入模型、维度和条数元数据；未改动语料版本")
+        return
 
     # 1. 加载 chunk
     print("\n[1/4] 加载 chunk JSONL...")
@@ -460,23 +537,12 @@ def main():
 
     # 4. 生成语义向量（可选）
     print("\n[4/5] 生成语义向量...")
-    emb_result = None if args.skip_embeddings else build_embeddings(chunks)
+    emb_result = None if args.skip_embeddings else write_embeddings_and_metadata(chunks, version)
     if args.skip_embeddings:
         print("  ↷ 已按参数跳过语义向量生成")
     if emb_result:
-        dim, emb_buffer, emb_min, emb_max = emb_result
-        with open(OUT_EMBEDDINGS, 'wb') as f:
-            f.write(emb_buffer)
-        emb_size = os.path.getsize(OUT_EMBEDDINGS)
+        dim, emb_size = emb_result
         print(f"  ✓ embeddings.bin: {dim} 维, {len(chunks)} 条, {emb_size/1024:.0f} KB")
-
-        # 更新版本文件
-        version["embeddings"] = {
-            "dim": dim,
-            "size": emb_size,
-        }
-        with open(OUT_VERSION, 'w', encoding='utf-8') as f:
-            json.dump(version, f, ensure_ascii=False, separators=(',', ':'))
         print(f"  ✓ index_version.json 已更新（含 embeddings 信息）")
 
     # 5. 汇总

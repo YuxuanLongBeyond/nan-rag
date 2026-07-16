@@ -4,6 +4,7 @@ import healthFunction, { healthHandler } from "../api/health.mjs";
 import searchFunction, { searchHandler } from "../api/search.mjs";
 import contextFunction, { contextHandler } from "../api/context.mjs";
 import { databaseErrorCode } from "../server/database.mjs";
+import { embedQuery } from "../server/embeddings.mjs";
 
 async function withoutDatabase(callback) {
   const previous = process.env.DATABASE_URL;
@@ -99,22 +100,16 @@ test("搜索接口未配置数据库时不泄漏内部信息", async () => {
   });
 });
 
-test("语义模式不会在缺少语义扩展时静默降级为宽泛搜索", async () => {
-  const previous = process.env.DATABASE_URL;
-  process.env.DATABASE_URL = "postgresql://unused.invalid/test";
+test("未配置向量服务时明确返回降级原因且不发起外部请求", async () => {
+  const previous = process.env.HF_TOKEN;
+  delete process.env.HF_TOKEN;
   try {
-    const response = await searchHandler(new Request("https://example.test/api/search", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Copyright-Accepted": "1",
-      },
-      body: JSON.stringify({ query: "心里很乱怎么办", mode: "semantic" }),
-    }));
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error, "语义检索缺少有效的语义扩展词");
+    assert.deepEqual(await embedQuery("心里很乱怎么办"), {
+      vector: null,
+      reason: "HF_TOKEN_MISSING",
+    });
   } finally {
-    if (previous === undefined) delete process.env.DATABASE_URL;
-    else process.env.DATABASE_URL = previous;
+    if (previous === undefined) delete process.env.HF_TOKEN;
+    else process.env.HF_TOKEN = previous;
   }
 });

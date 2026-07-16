@@ -100,6 +100,7 @@ const state = {
   // "remote"：Vercel + Postgres；"local"：旧静态索引降级模式
   backendMode: "pending",
   backendMeta: null,
+  lastSearchMeta: null,
 
   // 加载状态
   loading: { stage: "idle", current: 0, total: 0 },
@@ -157,13 +158,11 @@ function bindEls() {
     topK: document.getElementById("topK"),
     minScore: document.getElementById("minScore"),
     strictMode: document.getElementById("strictMode"),
+    exactSearch: document.getElementById("exactSearch"),
     modeHelp: document.getElementById("modeHelp"),
     searchInsight: document.getElementById("searchInsight"),
     queryExamples: document.querySelectorAll("[data-query]"),
     libraryDetails: document.getElementById("libraryDetails"),
-
-    // 搜索模式
-    searchModeRadios: document.querySelectorAll('input[name="searchMode"]'),
 
     // AI 回答
     aiAnswerBtn: document.getElementById("aiAnswerBtn"),
@@ -1008,7 +1007,7 @@ async function searchRemote(
   if (!resp.ok) {
     throw new Error(data?.error || `检索 API 返回 HTTP ${resp.status}`);
   }
-  return (data?.results || []).map((result) => ({
+  const results = (data?.results || []).map((result) => ({
     chunk: {
       id: result.id,
       w: result.work,
@@ -1020,6 +1019,8 @@ async function searchRemote(
     sourceUrl: result.sourceUrl || "",
     score: Number(result.score) || 0,
   }));
+  results.meta = data?.meta || null;
+  return results;
 }
 
 function parseSemanticTerms(content, query) {
@@ -1859,15 +1860,10 @@ function renderLibrary() {
 
 function updateModeHelp() {
   if (!els.modeHelp) return;
-  const help = {
-    semantic: state.apiKey
-      ? "会先理解问题并转换为原著术语，再进行多路召回和语义精排。"
-      : "可直接使用基础语义；设置 DeepSeek Key 后会自动增强复杂问题的理解。",
-    fuzzy: "适合已知部分词语、近似说法或不确定完整原句时使用。",
-    exact: "只查找连续出现的完整原句，适合核对明确引文。",
-  };
-  els.modeHelp.textContent = help[state.searchMode] || help.semantic;
-  els.searchButton.textContent = state.searchMode === "semantic" ? "智能检索" : "检索";
+  els.modeHelp.textContent = state.searchMode === "exact"
+    ? "只查找连续出现的完整原句，适合核对明确引文。"
+    : "自动融合关键词、模糊匹配与语义召回，直接输入问题即可。";
+  els.searchButton.textContent = "检索";
 }
 
 function renderSearchInsight(terms = [], effectiveMode = state.searchMode) {
@@ -1878,11 +1874,20 @@ function renderSearchInsight(terms = [], effectiveMode = state.searchMode) {
   const label = document.createElement("span");
   label.className = "insight-label";
   if (effectiveMode !== "semantic") {
-    label.textContent = "未识别到可扩展概念，已自动使用增强模糊检索";
+    label.textContent = "完整原句检索";
     els.searchInsight.appendChild(label);
     return;
   }
-  label.textContent = state.lastSemanticSource === "ai" ? "AI 理解出的相关概念" : "相关概念";
+  const vectorMode = state.lastSearchMeta?.vectorMode;
+  if (vectorMode === "direct") label.textContent = "已融合问题向量与相关概念";
+  else if (vectorMode === "neighbors") label.textContent = "已融合语义邻域与相关概念";
+  else if (state.lastSearchMeta) label.textContent = state.lastSemanticSource === "ai"
+    ? "已使用 AI 相关概念；向量召回暂未启用"
+    : "已使用混合字面检索；向量召回暂未启用";
+  else if (terms.length > 0) label.textContent = state.lastSemanticSource === "ai"
+    ? "AI 理解出的相关概念"
+    : "相关概念";
+  else return;
   els.searchInsight.appendChild(label);
   for (const term of terms.slice(0, 8)) {
     const chip = document.createElement("span");
@@ -2014,6 +2019,8 @@ async function runSearch() {
   const parsedMinScore = parseFloat(els.minScore.value);
   const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
   const strictMode = els.strictMode.checked;
+  state.searchMode = els.exactSearch?.checked ? "exact" : "semantic";
+  state.lastSearchMeta = null;
 
   if (!isSearchReady()) {
     els.answerStatus.textContent = "检索服务尚未加载完成";
@@ -2037,11 +2044,13 @@ async function runSearch() {
     const semanticTerms = state.searchMode === "semantic"
       ? await expandSemanticQuery(query)
       : [];
-    const effectiveMode = state.searchMode === "semantic" && semanticTerms.length === 0
-      ? "fuzzy"
-      : state.searchMode;
+    const effectiveMode = state.searchMode;
     state.lastSemanticTerms = semanticTerms;
     renderSearchInsight(semanticTerms, effectiveMode);
+    if (state.backendMode !== "remote" && effectiveMode === "semantic" &&
+        !hasSemanticSearch()) {
+      await checkAndLoadEmbeddings();
+    }
     if (requestId !== state.searchSeq) return;
     if (semanticTerms.length > 0) {
       els.answerStatus.textContent = `正在检索相关概念：${semanticTerms.slice(0, 4).join("、")}`;
@@ -2065,6 +2074,8 @@ async function runSearch() {
       state.searchMode = requestedMode;
     }
     if (requestId !== state.searchSeq) return;
+    state.lastSearchMeta = results.meta || null;
+    renderSearchInsight(semanticTerms, effectiveMode);
     state.lastResults = results;
 
     const answer = buildConservativeAnswer(query, results, strictMode);
@@ -2139,13 +2150,8 @@ async function init() {
 
   const initialParams = new URLSearchParams(window.location.search);
   const initialMode = initialParams.get("mode");
-  if (["semantic", "fuzzy", "exact"].includes(initialMode)) {
-    state.searchMode = initialMode;
-    const initialRadio = document.querySelector(
-      `input[name="searchMode"][value="${initialMode}"]`,
-    );
-    if (initialRadio) initialRadio.checked = true;
-  }
+  state.searchMode = initialMode === "exact" ? "exact" : "semantic";
+  if (els.exactSearch) els.exactSearch.checked = state.searchMode === "exact";
   if (els.libraryDetails && window.matchMedia("(max-width: 860px)").matches) {
     els.libraryDetails.removeAttribute("open");
   }
@@ -2203,34 +2209,19 @@ async function init() {
   els.topK.addEventListener("change", runSearch);
   els.minScore.addEventListener("change", runSearch);
   els.strictMode.addEventListener("change", runSearch);
+  els.exactSearch?.addEventListener("change", () => {
+    state.searchMode = els.exactSearch.checked ? "exact" : "semantic";
+    state.lastSemanticTerms = [];
+    state.lastSearchMeta = null;
+    renderSearchInsight([], state.searchMode);
+    updateModeHelp();
+    if (els.queryInput.value.trim()) runSearch();
+  });
   els.queryExamples.forEach((button) => {
     button.addEventListener("click", () => {
       els.queryInput.value = button.dataset.query || "";
       els.queryInput.focus();
       runSearch();
-    });
-  });
-
-  // 搜索模式切换
-  els.searchModeRadios.forEach((radio) => {
-    radio.addEventListener("change", async () => {
-      if (radio.checked) {
-        state.searchMode = radio.value;
-        state.lastSemanticTerms = [];
-        renderSearchInsight();
-        updateModeHelp();
-        // 纯静态降级模式可额外使用版本匹配的本地向量精排。
-        if (state.backendMode !== "remote" &&
-            state.searchMode === "semantic" && !hasSemanticSearch()) {
-          showToast("首次使用语义检索，正在加载向量数据...");
-          const ok = await checkAndLoadEmbeddings();
-          if (!ok) {
-            showToast("本地向量不可用，将使用 AI 语义扩展检索");
-          }
-        }
-        // 自动重新搜索
-        if (els.queryInput.value.trim()) runSearch();
-      }
     });
   });
 
@@ -2261,11 +2252,14 @@ async function init() {
         ? await expandSemanticQuery(retrievalQuery)
         : [];
       if (requestId !== state.searchSeq) return;
-      const effectiveMode = state.searchMode === "semantic" && semanticTerms.length === 0
-        ? "fuzzy"
-        : state.searchMode;
+      const effectiveMode = state.searchMode;
       state.lastSemanticTerms = semanticTerms;
       renderSearchInsight(semanticTerms, effectiveMode);
+      if (state.backendMode !== "remote" && effectiveMode === "semantic" &&
+          !hasSemanticSearch()) {
+        await checkAndLoadEmbeddings();
+      }
+      if (requestId !== state.searchSeq) return;
       let results;
       if (state.backendMode === "remote") {
         results = await searchRemote(
@@ -2285,6 +2279,8 @@ async function init() {
         state.searchMode = requestedMode;
       }
       if (requestId !== state.searchSeq) return;
+      state.lastSearchMeta = results.meta || null;
+      renderSearchInsight(semanticTerms, effectiveMode);
       state.lastResults = results;
 
       // 服务端结果已经包含全文；静态降级模式按作品补齐。

@@ -324,34 +324,6 @@ a { color: var(--accent-dark); }
 }
 .toggle input { width: 15px; height: 15px; }
 
-/* ── 搜索模式选择器 ──────────────────────────────── */
-.search-modes {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
-  margin-top: 14px;
-}
-.mode-label {
-  font-size: 13px; font-weight: 600; color: var(--muted);
-  margin-right: 8px;
-}
-.mode-option {
-  display: flex; align-items: center;
-  padding: 5px 12px;
-  border: 1px solid var(--line);
-  background: #fbfcfa;
-  font-size: 13px; color: var(--muted);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.mode-option:first-of-type { border-radius: 6px 0 0 6px; }
-.mode-option:last-of-type { border-radius: 0 6px 6px 0; }
-.mode-option:has(input:checked) {
-  background: var(--accent); border-color: var(--accent);
-  color: #fff; font-weight: 600;
-}
-.mode-option:hover:not(:has(input:checked)) {
-  border-color: var(--accent); color: var(--accent-dark);
-}
-.mode-option input { display: none; }
 .mode-help {
   margin: 8px 0 0; color: var(--muted); font-size: 12px;
 }
@@ -714,9 +686,6 @@ pre {
   .answer-actions { width: 100%; }
   .answer-actions button { flex: 1; }
   .controls { gap: 10px; }
-  .search-modes { align-items: stretch; }
-  .mode-label { width: 100%; margin-bottom: 3px; }
-  .mode-option { flex: 1; justify-content: center; padding: 7px 8px; }
   .result-meta-secondary { flex-wrap: wrap; }
   .gate-modal { padding: 20px; margin: 12px; }
   .gate-modal h2 { font-size: 18px; }

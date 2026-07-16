@@ -1,10 +1,11 @@
 import {
   buildSemanticSearchTerms,
   buildSearchTerms,
-  mergeCandidateSets,
+  mergeHybridCandidates,
   normalizeSemanticTerms,
   rankCandidates,
 } from "../server/search-core.mjs";
+import { embedQuery, vectorLiteral } from "../server/embeddings.mjs";
 import {
   databaseErrorDetails,
   isDatabaseTimeout,
@@ -48,34 +49,78 @@ export async function searchHandler(request) {
   if (!query) return json({ results: [], meta: { mode, candidateCount: 0 } });
   if (query.length > 200) return json({ error: "查询内容不能超过 200 字" }, 400);
   const semanticTerms = normalizeSemanticTerms(input?.semanticTerms, query);
-  if (mode === "semantic" && semanticTerms.length === 0) {
-    return json({ error: "语义检索缺少有效的语义扩展词" }, 400);
-  }
 
   const startedAt = Date.now();
   try {
-    const { rows, terms } = await runDatabaseQuery(async (sql) => {
+    const embeddingPromise = mode === "semantic"
+      ? embedQuery(query)
+      : Promise.resolve({ vector: null, reason: "NOT_REQUESTED" });
+    const { resultSets, terms } = await runDatabaseQuery(async (sql) => {
       if (mode === "exact") {
         const exactQuery = query.replace(/[%_\\]+/g, " ").replace(/\s+/g, " ").trim();
-        if (!exactQuery) return { rows: [], terms: [] };
+        if (!exactQuery) return { resultSets: [], terms: [] };
         return {
           terms: [exactQuery],
-          rows: await sql`SELECT * FROM rag_search_exact(${exactQuery}, ${Math.max(100, topK * 20)})`,
+          resultSets: [await sql`SELECT * FROM rag_search_exact(${exactQuery}, ${Math.max(100, topK * 20)})`],
         };
       }
 
       const searchTerms = mode === "semantic"
         ? buildSemanticSearchTerms(query, semanticTerms)
         : buildSearchTerms(query);
-      if (searchTerms.length === 0) return { rows: [], terms: [] };
+      if (searchTerms.length === 0) return { resultSets: [], terms: [] };
       const perTerm = Math.max(60, Math.min(140, topK * 12));
       const resultSets = await sql.transaction(
         searchTerms.map((term) => term.length <= 2
           ? sql`SELECT * FROM rag_search_short_term(${term}, ${perTerm})`
           : sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
       );
-      return { rows: mergeCandidateSets(resultSets), terms: searchTerms };
+      return { resultSets, terms: searchTerms };
     }, 15000);
+
+    let vectorRows = [];
+    let vectorMode = "off";
+    let vectorReason = "NOT_REQUESTED";
+    if (mode === "semantic") {
+      const embedded = await embeddingPromise;
+      vectorReason = embedded.reason;
+      try {
+        if (embedded.vector) {
+          const literal = vectorLiteral(embedded.vector);
+          vectorRows = await runDatabaseQuery(
+            (sql) => sql`SELECT * FROM rag_search_vector(
+              ${literal}::halfvec(384), ${Math.max(80, topK * 12)}
+            )`,
+            8000,
+          );
+          vectorMode = "direct";
+        } else {
+          const seeds = resultSets
+            .flat()
+            .sort((a, b) => Number(b.db_score) - Number(a.db_score))
+            .slice(0, 6)
+            .map((row) => row.id);
+          if (seeds.length > 0) {
+            vectorRows = await runDatabaseQuery(
+              (sql) => sql`SELECT * FROM rag_search_vector_neighbors(
+                ${seeds}, ${Math.max(80, topK * 12)}
+              )`,
+              8000,
+            );
+            if (vectorRows.length > 0) vectorMode = "neighbors";
+          }
+        }
+      } catch (vectorError) {
+        vectorReason = databaseErrorDetails(vectorError, startedAt).code;
+        console.warn("Vector retrieval unavailable; using lexical candidates", {
+          code: vectorReason,
+        });
+      }
+    }
+
+    const rows = mode === "exact"
+      ? (resultSets[0] || [])
+      : mergeHybridCandidates(resultSets, vectorRows);
 
     const ranked = rankCandidates(rows, query, mode, topK, minScore, semanticTerms);
     const results = ranked.map(({ row, score }) => ({
@@ -95,6 +140,8 @@ export async function searchHandler(request) {
         mode,
         terms,
         semanticTerms: mode === "semantic" ? semanticTerms : undefined,
+        vectorMode: mode === "semantic" ? vectorMode : undefined,
+        vectorReason: mode === "semantic" ? vectorReason : undefined,
         candidateCount: rows.length,
         elapsedMs: Date.now() - startedAt,
       },
