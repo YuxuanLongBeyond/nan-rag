@@ -26,6 +26,7 @@ const {
   snapshotResults,
   safeExternalUrl,
   trimConversationHistory,
+  resetConversationState,
 } = require("../app.js");
 
 function useIndex(items) {
@@ -203,6 +204,41 @@ test("每轮提示词使用不重复的引用编号并保留历史证据", () =>
   );
   assert(messages.some((message) => message.content.includes("[T1-1] 旧证据")));
   assert(currentPrompt.includes("[T2-1] 《定慧初修》数息"));
+});
+
+test("多轮提示词保留全部历史证据，不用裁剪换取速度", () => {
+  const history = [];
+  for (let turnId = 1; turnId <= 4; turnId += 1) {
+    history.push({
+      role: "user",
+      turnId,
+      prompt: `问题：第${turnId}轮\n资料片段：\n[T${turnId}-1] 完整历史证据${turnId}`,
+    });
+    history.push({ role: "assistant", turnId, content: `回答${turnId} [T${turnId}-1]` });
+  }
+  const { messages } = buildConversationMessages("继续", [], 5, history);
+  for (let turnId = 1; turnId <= 4; turnId += 1) {
+    assert(messages.some((message) =>
+      message.content.includes(`[T${turnId}-1] 完整历史证据${turnId}`)));
+  }
+});
+
+test("重新开始会清空检索状态并把引用轮次重置为一", () => {
+  state.conversation = [{ role: "assistant", turnId: 7, content: "旧回答" }];
+  state.nextTurnId = 8;
+  state.lastResults = [{ id: "old" }];
+  state.lastPrompt = "旧提示词";
+  state.lastSemanticTerms = ["旧概念"];
+  state.lastSearchMeta = { vectorMode: "neighbors" };
+  state.searchMode = "exact";
+  resetConversationState();
+  assert.deepEqual(state.conversation, []);
+  assert.equal(state.nextTurnId, 1);
+  assert.deepEqual(state.lastResults, []);
+  assert.equal(state.lastPrompt, "");
+  assert.deepEqual(state.lastSemanticTerms, []);
+  assert.equal(state.lastSearchMeta, null);
+  assert.equal(state.searchMode, "semantic");
 });
 
 test("对话结果快照保存正文，且空来源不会被解析成当前网页", () => {

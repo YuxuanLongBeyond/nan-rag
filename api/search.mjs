@@ -13,6 +13,32 @@ import {
 } from "../server/database.mjs";
 
 const ALLOWED_MODES = new Set(["fuzzy", "exact", "broad", "semantic"]);
+const SEARCH_CACHE_TTL_MS = 2 * 60 * 1000;
+const SEARCH_CACHE_LIMIT = 60;
+const searchCache = new Map();
+
+function searchCacheKey({ query, mode, topK, minScore, semanticTerms }) {
+  return JSON.stringify([query, mode, topK, minScore, semanticTerms]);
+}
+
+function getCachedSearch(key) {
+  const cached = searchCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.createdAt > SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(key);
+    return null;
+  }
+  searchCache.delete(key);
+  searchCache.set(key, cached);
+  return cached.data;
+}
+
+function cacheSearch(key, data) {
+  searchCache.set(key, { createdAt: Date.now(), data });
+  while (searchCache.size > SEARCH_CACHE_LIMIT) {
+    searchCache.delete(searchCache.keys().next().value);
+  }
+}
 
 function json(data, status = 200) {
   return Response.json(data, {
@@ -49,6 +75,14 @@ export async function searchHandler(request) {
   if (!query) return json({ results: [], meta: { mode, candidateCount: 0 } });
   if (query.length > 200) return json({ error: "查询内容不能超过 200 字" }, 400);
   const semanticTerms = normalizeSemanticTerms(input?.semanticTerms, query);
+  const cacheKey = searchCacheKey({ query, mode, topK, minScore, semanticTerms });
+  const cached = getCachedSearch(cacheKey);
+  if (cached) {
+    return json({
+      ...cached,
+      meta: { ...cached.meta, cacheHit: true, elapsedMs: 0 },
+    });
+  }
 
   const startedAt = Date.now();
   try {
@@ -70,11 +104,28 @@ export async function searchHandler(request) {
         : buildSearchTerms(query);
       if (searchTerms.length === 0) return { resultSets: [], terms: [] };
       const perTerm = Math.max(60, Math.min(140, topK * 12));
-      const resultSets = await sql.transaction(
-        searchTerms.map((term) => term.length <= 2
-          ? sql`SELECT * FROM rag_search_short_term(${term}, ${perTerm})`
-          : sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
-      );
+      const shortTerms = searchTerms.filter((term) => term.length <= 2);
+      const longTerms = searchTerms.filter((term) => term.length > 2);
+      // 长词走索引并行召回；所有二字词合并为一次表扫描，但仍逐词保留
+      // 相同的 perTerm 候选上限。
+      const [shortRows, ...longSets] = await Promise.all([
+        shortTerms.length > 1
+          ? sql`SELECT * FROM rag_search_short_terms(${shortTerms}, ${perTerm})`
+          : shortTerms.length === 1
+            ? sql`SELECT * FROM rag_search_short_term(${shortTerms[0]}, ${perTerm})`
+            : Promise.resolve([]),
+        ...longTerms.map((term) => sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
+      ]);
+      const shortSets = new Map(shortTerms.map((term) => [term, []]));
+      if (shortTerms.length === 1) {
+        shortSets.set(shortTerms[0], shortRows);
+      } else {
+        for (const row of shortRows) shortSets.get(row.search_term)?.push(row);
+      }
+      const longSetsByTerm = new Map(longTerms.map((term, index) => [term, longSets[index]]));
+      const resultSets = searchTerms.map((term) => term.length <= 2
+        ? shortSets.get(term) || []
+        : longSetsByTerm.get(term) || []);
       return { resultSets, terms: searchTerms };
     }, 15000);
 
@@ -134,7 +185,7 @@ export async function searchHandler(request) {
       score: Number(score.toFixed(4)),
     }));
 
-    return json({
+    const data = {
       results,
       meta: {
         mode,
@@ -145,7 +196,9 @@ export async function searchHandler(request) {
         candidateCount: rows.length,
         elapsedMs: Date.now() - startedAt,
       },
-    });
+    };
+    cacheSearch(cacheKey, data);
+    return json(data);
   } catch (error) {
     const details = databaseErrorDetails(error, startedAt);
     console.error("RAG search failed", details);

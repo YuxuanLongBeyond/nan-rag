@@ -38,6 +38,17 @@ test("语义搜索词包含经过约束的跨表达概念", () => {
   assert(terms.includes("安那般那"));
 });
 
+test("语义搜索保持多路召回，但不把整句口语交给模糊扫描", () => {
+  const terms = buildSemanticSearchTerms(
+    "心里烦乱晚上睡不着怎么办",
+    ["不寐", "数息", "安那般那", "止观"],
+  );
+  assert.equal(terms.length, 6);
+  assert(terms.includes("睡不着"));
+  assert(terms.includes("数息"));
+  assert(!terms.includes("心里烦乱晚上睡不着"));
+});
+
 test("多个数据库候选集合按 id 去重并保留较高分", () => {
   const merged = mergeCandidateSets([
     [{ id: "a", db_score: 0.2 }],

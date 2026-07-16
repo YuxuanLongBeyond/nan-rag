@@ -27,6 +27,10 @@ const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CONVERSATION_MAX_TURNS = 10;
 const MAX_RESULTS_PER_SECTION = 2;
 const SEMANTIC_CACHE_LIMIT = 30;
+const SEMANTIC_SESSION_CACHE_KEY = "nan-semantic-expansions";
+const AI_FIRST_TOKEN_TIMEOUT_MS = 30000;
+const AI_TOTAL_TIMEOUT_MS = 90000;
+const AI_RENDER_INTERVAL_MS = 60;
 const FOLLOW_UP_REFERENCE_PATTERN =
   /^(那|那么|这个|那个|这些|那些|它|它们|其|上述|上面|刚才|前面|其中|对此|这种|这点|具体|继续|再讲|再说)|第[一二三四五六七八九十\d]+(个|点|段)|还(有|能).{0,8}(吗|呢|么)?$/;
 const QUERY_STOPWORDS = new Set([
@@ -1066,6 +1070,39 @@ function expandSemanticQueryLocally(query) {
   return terms;
 }
 
+function readSemanticSessionCache(cacheKey) {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const values = JSON.parse(sessionStorage.getItem(SEMANTIC_SESSION_CACHE_KEY) || "{}");
+    const cached = values[cacheKey];
+    return Array.isArray(cached?.terms) ? cached : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberSemanticExpansion(cacheKey, terms, source) {
+  state.semanticCache.set(cacheKey, { terms: [...terms], source });
+  while (state.semanticCache.size > SEMANTIC_CACHE_LIMIT) {
+    state.semanticCache.delete(state.semanticCache.keys().next().value);
+  }
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    const values = JSON.parse(sessionStorage.getItem(SEMANTIC_SESSION_CACHE_KEY) || "{}");
+    values[cacheKey] = { terms: [...terms], source };
+    const entries = Object.entries(values).slice(-SEMANTIC_CACHE_LIMIT);
+    sessionStorage.setItem(SEMANTIC_SESSION_CACHE_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // 浏览器禁用会话存储时仍保留内存缓存。
+  }
+}
+
+function clearSemanticCaches() {
+  state.semanticCache.clear();
+  if (typeof sessionStorage === "undefined") return;
+  try { sessionStorage.removeItem(SEMANTIC_SESSION_CACHE_KEY); } catch { /* ignore */ }
+}
+
 /**
  * 用用户自己的 DeepSeek Key 把自然语言问题扩展为语料中可能出现的概念词。
  * Key 只从浏览器直连 DeepSeek，不经过本站服务端。
@@ -1076,6 +1113,12 @@ async function expandSemanticQuery(query) {
   if (cached) {
     state.lastSemanticSource = cached.source;
     return [...cached.terms];
+  }
+  const sessionCached = readSemanticSessionCache(cacheKey);
+  if (sessionCached) {
+    state.lastSemanticSource = sessionCached.source;
+    state.semanticCache.set(cacheKey, sessionCached);
+    return [...sessionCached.terms];
   }
 
   const localTerms = expandSemanticQueryLocally(query);
@@ -1096,7 +1139,7 @@ async function expandSemanticQuery(query) {
   let lastError;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
       const resp = await fetch(API_URL, {
         method: "POST",
@@ -1127,10 +1170,7 @@ async function expandSemanticQuery(query) {
       if (aiTerms.length > 0) {
         const terms = [...new Set([...aiTerms, ...localTerms])].slice(0, 8);
         state.lastSemanticSource = "ai";
-        state.semanticCache.set(cacheKey, { terms, source: "ai" });
-        while (state.semanticCache.size > SEMANTIC_CACHE_LIMIT) {
-          state.semanticCache.delete(state.semanticCache.keys().next().value);
-        }
+        rememberSemanticExpansion(cacheKey, terms, "ai");
         return terms;
       }
       lastError = new Error("DeepSeek 未返回可用的语义扩展词");
@@ -1138,6 +1178,8 @@ async function expandSemanticQuery(query) {
       lastError = controller.signal.aborted
         ? new Error("语义扩展请求超时，请稍后重试")
         : error;
+      // 超时不再重复等待；快速失败或格式异常仍保留一次重试以维持可靠性。
+      if (controller.signal.aborted) break;
     } finally {
       clearTimeout(timeout);
     }
@@ -1634,6 +1676,16 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
   const answerRequestId = ++state.answerSeq;
   const controller = new AbortController();
   state.answerController = controller;
+  let timeoutReason = "";
+  let streamRenderTimer = null;
+  const firstTokenTimer = setTimeout(() => {
+    timeoutReason = "first-token";
+    controller.abort();
+  }, AI_FIRST_TOKEN_TIMEOUT_MS);
+  const totalTimer = setTimeout(() => {
+    timeoutReason = "total";
+    controller.abort();
+  }, AI_TOTAL_TIMEOUT_MS);
   const turnId = state.nextTurnId++;
   const resultSnapshots = snapshotResults(results);
   const { messages, currentPrompt } = buildConversationMessages(query, results, turnId);
@@ -1712,6 +1764,21 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
     const decoder = new TextDecoder();
     let answerText = "";
     let buffer = "";
+    let receivedFirstToken = false;
+
+    const renderStreamingAnswer = () => {
+      if (streamRenderTimer !== null) return;
+      streamRenderTimer = setTimeout(() => {
+        streamRenderTimer = null;
+        const rendered = renderAIText(answerText, turnId);
+        const bubble = msgDiv.querySelector(".chat-bubble");
+        if (bubble) {
+          bubble.innerHTML = '<div class="ai-answer">' + rendered +
+            '<span class="cursor">|</span></div>';
+          if (convContainer) convContainer.scrollTop = convContainer.scrollHeight;
+        }
+      }, AI_RENDER_INTERVAL_MS);
+    };
 
     const consumeLine = (line) => {
       const trimmed = line.trim();
@@ -1722,14 +1789,12 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
         const data = JSON.parse(dataStr);
         const delta = data.choices?.[0]?.delta?.content;
         if (!delta) return;
-        answerText += delta;
-        const rendered = renderAIText(answerText, turnId);
-        const bubble = msgDiv.querySelector(".chat-bubble");
-        if (bubble) {
-          bubble.innerHTML = '<div class="ai-answer">' + rendered +
-            '<span class="cursor">|</span></div>';
-          if (convContainer) convContainer.scrollTop = convContainer.scrollHeight;
+        if (!receivedFirstToken) {
+          receivedFirstToken = true;
+          clearTimeout(firstTokenTimer);
         }
+        answerText += delta;
+        renderStreamingAnswer();
       } catch {
         // 跳过无法解析的 SSE 行
       }
@@ -1747,6 +1812,10 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
     if (buffer.trim()) consumeLine(buffer);
     if (!answerText.trim()) throw new Error("AI 未返回有效回答，请稍后重试");
     if (answerRequestId !== state.answerSeq) return;
+    if (streamRenderTimer !== null) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
 
     // 最终回答与本轮原文快照放在同一气泡中，之后的检索不会覆盖它。
     const bubble = msgDiv.querySelector(".chat-bubble");
@@ -1767,7 +1836,17 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
       : "AI 回答（基于检索片段）";
   } catch (err) {
     removeConversationTurn(turnId);
-    if (err.name === "AbortError" || answerRequestId !== state.answerSeq) return;
+    if (answerRequestId !== state.answerSeq) return;
+    if (err.name === "AbortError" && !timeoutReason) return;
+    if (err.name === "AbortError") {
+      const message = timeoutReason === "first-token"
+        ? "AI 服务 30 秒内没有开始回答，请重试"
+        : "AI 回答超过 90 秒，已停止本次请求";
+      els.answerStatus.textContent = message;
+      showToast(message);
+      if (state.conversation.length === 0) els.answerBox.style.display = "";
+      return;
+    }
     els.answerStatus.textContent = `AI 回答失败：${err.message}`;
     showToast("AI 回答失败，请稍后重试");
 
@@ -1776,6 +1855,9 @@ async function generateAIAnswer(query, results, retrievalQuery = query) {
       els.answerBox.style.display = "";
     }
   } finally {
+    clearTimeout(firstTokenTimer);
+    clearTimeout(totalTimer);
+    if (streamRenderTimer !== null) clearTimeout(streamRenderTimer);
     if (answerRequestId === state.answerSeq) {
       if (state.answerController === controller) state.answerController = null;
       els.aiAnswerBtn.disabled = false;
@@ -2105,6 +2187,17 @@ async function runSearch() {
 }
 
 // ── 多轮对话 ──────────────────────────────────────
+function resetConversationState() {
+  state.conversation = [];
+  state.nextTurnId = 1;
+  state.lastResults = [];
+  state.lastPrompt = "";
+  state.lastSemanticTerms = [];
+  state.lastSemanticSource = "";
+  state.lastSearchMeta = null;
+  state.searchMode = "semantic";
+}
+
 function startNewConversation() {
   if (state.answerController) state.answerController.abort();
   state.answerController = null;
@@ -2112,11 +2205,25 @@ function startNewConversation() {
   if (state.searchController) state.searchController.abort();
   state.searchController = null;
   state.searchSeq += 1;
-  state.conversation = [];
+  resetConversationState();
+  if (els.queryInput) els.queryInput.value = "";
+  if (els.quickAskInput) els.quickAskInput.value = "";
+  if (els.exactSearch) els.exactSearch.checked = false;
+  renderSearchInsight();
   els.answerBox.style.display = "";
   els.answerBox.innerHTML =
     '<p>检索后可展开下方“本次检索结果”。点击“AI 回答”可基于原文片段生成带引用的回答（需 API Key）。</p>';
-  els.answerStatus.textContent = "新对话已开始";
+  els.answerStatus.textContent = "已重置，可以开始新的检索";
+
+  if (els.results) els.results.innerHTML = '<div class="empty">输入问题后显示检索结果</div>';
+  if (els.resultCount) els.resultCount.textContent = "0 条";
+
+  if (typeof history !== "undefined" && typeof window !== "undefined") {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("q");
+    url.searchParams.delete("mode");
+    history.replaceState(null, "", url);
+  }
 
   // 清空对话列表
   const convList = document.getElementById("conversationList");
@@ -2129,6 +2236,8 @@ function startNewConversation() {
     els.quickAskBtn.textContent = "发送";
   }
   updateConversationUI();
+  updateModeHelp();
+  els.queryInput?.focus();
 }
 
 function updateConversationUI() {
@@ -2189,13 +2298,13 @@ async function init() {
     if (key) {
       state.apiKey = key;
       localStorage.setItem(API_KEY_STORAGE, key);
-      state.semanticCache.clear();
+      clearSemanticCaches();
       els.apiStatus.textContent = "已保存 ✓";
       setTimeout(() => { els.apiStatus.textContent = "已设置"; }, 2000);
     } else {
       state.apiKey = "";
       localStorage.removeItem(API_KEY_STORAGE);
-      state.semanticCache.clear();
+      clearSemanticCaches();
       els.apiStatus.textContent = "已清除，仍可使用基础语义检索";
     }
     updateModeHelp();
@@ -2477,5 +2586,6 @@ if (typeof module !== "undefined" && module.exports) {
     snapshotResults,
     safeExternalUrl,
     trimConversationHistory,
+    resetConversationState,
   };
 }

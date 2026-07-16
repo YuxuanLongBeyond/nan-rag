@@ -105,6 +105,79 @@ AS $$
   LIMIT LEAST(GREATEST(p_limit, 1), 300);
 $$;
 
+-- 一次语料扫描同时处理多个短词，再按每个词分别保留 p_limit 条。
+-- 结果与逐词调用 rag_search_short_term 等价，避免语义扩展包含多个二字词时
+-- 重复扫描整张表。
+CREATE OR REPLACE FUNCTION rag_search_short_terms(
+  p_terms text[],
+  p_limit integer DEFAULT 120
+)
+RETURNS TABLE (
+  search_term text,
+  id text,
+  work text,
+  chapter text,
+  content text,
+  source_url text,
+  char_count integer,
+  db_score real
+)
+LANGUAGE sql
+STABLE
+AS $$
+  WITH base AS MATERIALIZED (
+    SELECT
+      c.id,
+      c.index_pos,
+      c.work,
+      c.chapter,
+      c.content,
+      c.source_url,
+      c.char_count,
+      lower(c.work || ' ' || c.chapter || ' ' || c.content) AS search_text
+    FROM rag_chunks AS c
+  ), ranked AS (
+    SELECT
+      term.value AS search_term,
+      b.id,
+      b.work,
+      b.chapter,
+      b.content,
+      b.source_url,
+      b.char_count,
+      CASE
+        WHEN lower(b.work) LIKE '%' || lower(term.value) || '%' THEN 1.0
+        WHEN lower(b.chapter) LIKE '%' || lower(term.value) || '%' THEN 0.97
+        ELSE 0.9
+      END::real AS db_score,
+      row_number() OVER (
+        PARTITION BY term.value
+        ORDER BY
+          CASE
+            WHEN lower(b.work) LIKE '%' || lower(term.value) || '%' THEN 1.0
+            WHEN lower(b.chapter) LIKE '%' || lower(term.value) || '%' THEN 0.97
+            ELSE 0.9
+          END DESC,
+          b.index_pos
+      ) AS result_rank
+    FROM base AS b
+    CROSS JOIN LATERAL unnest(p_terms) AS term(value)
+    WHERE b.search_text LIKE '%' || lower(term.value) || '%'
+  )
+  SELECT
+    ranked.search_term,
+    ranked.id,
+    ranked.work,
+    ranked.chapter,
+    ranked.content,
+    ranked.source_url,
+    ranked.char_count,
+    ranked.db_score
+  FROM ranked
+  WHERE ranked.result_rank <= LEAST(GREATEST(p_limit, 1), 300)
+  ORDER BY ranked.search_term, ranked.result_rank;
+$$;
+
 CREATE OR REPLACE FUNCTION rag_search_exact(p_query text, p_limit integer DEFAULT 300)
 RETURNS TABLE (
   id text,

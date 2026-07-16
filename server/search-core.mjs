@@ -94,10 +94,32 @@ export function normalizeSemanticTerms(values, query = "", maxTerms = 8) {
 }
 
 export function buildSemanticSearchTerms(query, semanticTerms, maxTerms = 8) {
-  // 自然语言问题通常含较多口语成分，只保留两个原问题检索词，给传统术语和
-  // 同义概念留出更多召回通道。
-  const terms = buildSearchTerms(query, 2);
-  for (const term of normalizeSemanticTerms(semanticTerms, query)) {
+  const expanded = normalizeSemanticTerms(semanticTerms, query);
+  const terms = [];
+  const add = (term) => {
+    const clean = normalizeQuery(term).replace(/\s+/g, "");
+    if (clean.length < 2 || clean.length > 10 || terms.includes(clean)) return;
+    terms.push(clean);
+  };
+
+  // 长口语整句在 pg_trgm 上容易产生昂贵扫描。保持原有检索通道数量，但把
+  // 整句替换为 3–8 字的辨识性片段；没有扩展词时再补足中文分词。
+  const words = segmentWords(normalizeQuery(query))
+    .filter((word) => word.length >= 2 && word.length <= 10);
+  const originalLimit = expanded.length > 0 ? 2 : 4;
+  const compactTerms = buildSearchTerms(query, 10)
+    .filter((term) => term.length >= 3 && term.length <= 8);
+  const compactLimit = expanded.length > 0 ? originalLimit : 1;
+  for (const term of compactTerms.slice(0, compactLimit)) add(term);
+  for (const word of words) {
+    if (terms.length >= originalLimit) break;
+    add(word);
+  }
+  if (terms.length === 0) {
+    for (const term of buildSearchTerms(query, originalLimit)) add(term);
+  }
+
+  for (const term of expanded) {
     if (!terms.includes(term)) terms.push(term);
     if (terms.length >= maxTerms) break;
   }
