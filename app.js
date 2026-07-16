@@ -26,6 +26,8 @@ const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CONVERSATION_MAX_TURNS = 10;
 const MAX_RESULTS_PER_SECTION = 2;
 const SEMANTIC_CACHE_LIMIT = 30;
+const FOLLOW_UP_REFERENCE_PATTERN =
+  /^(那|那么|这个|那个|这些|那些|它|它们|其|上述|上面|刚才|前面|其中|对此|这种|这点|具体|继续|再讲|再说)|第[一二三四五六七八九十\d]+(个|点|段)|还(有|能).{0,8}(吗|呢|么)?$/;
 const QUERY_STOPWORDS = new Set([
   "南怀瑾", "南先生", "南老师", "先生", "老师", "如何", "怎么",
   "怎样", "什么", "什么是", "是什么", "为何", "为什么", "认为",
@@ -115,7 +117,10 @@ const state = {
   embeddings: null,     // { dim, buffer: ArrayBuffer, min, max, version }
 
   // 多轮对话
-  conversation: [],     // [{ role: "user"|"assistant", content, results? }, ...]
+  conversation: [],     // [{ role, turnId, content, prompt?, results? }, ...]
+  nextTurnId: 1,
+  answerSeq: 0,
+  answerController: null,
 };
 
 // ── DOM 引用 ──────────────────────────────────────
@@ -309,18 +314,63 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function renderAIText(text) {
+function renderAIText(text, defaultTurnId = null) {
+  const fallbackTurn = Number.isInteger(defaultTurnId) && defaultTurnId > 0
+    ? ` data-turn="${defaultTurnId}"`
+    : "";
   return escapeHtml(text)
     .replace(/\n/g, "<br>")
     .replace(
+      /\[T(\d+)-(\d+)\]/gi,
+      '<span class="cite-link" data-turn="$1" data-cite="$2"><sup class="cite">[T$1-$2]</sup></span>',
+    )
+    .replace(
       /\[(\d+)\]/g,
-      '<span class="cite-link" data-cite="$1"><sup class="cite">[$1]</sup></span>',
+      `<span class="cite-link"${fallbackTurn} data-cite="$1"><sup class="cite">[$1]</sup></span>`,
     );
+}
+
+function getLastUserTurn(conversation = state.conversation) {
+  for (let i = conversation.length - 1; i >= 0; i -= 1) {
+    if (conversation[i].role === "user") return conversation[i];
+  }
+  return null;
+}
+
+/**
+ * “那具体怎么做”一类追问缺少独立检索主题。只在检测到指代/承接表达时，
+ * 才继承上一轮检索问题，避免用户切换话题时引入旧主题噪声。
+ */
+function buildFollowUpRetrievalQuery(query, conversation = state.conversation) {
+  const current = String(query || "").trim();
+  const normalized = current.normalize("NFKC");
+  if (!current || !FOLLOW_UP_REFERENCE_PATTERN.test(normalized)) return current;
+  const previousTurn = getLastUserTurn(conversation);
+  const previous = String(
+    previousTurn?.retrievalQuery || previousTurn?.content || "",
+  ).trim();
+  if (!previous || previous === current) return current;
+  return `${previous.slice(0, 180)}；追问：${current}`;
+}
+
+function snapshotResults(results) {
+  return results.map((result) => ({
+    id: result.chunk.id,
+    work: result.chunk.w,
+    chapter: result.chunk.c,
+    charCount: result.chunk.n,
+    preview: result.chunk.p || "",
+    text: result.text || result.chunk.p || "",
+    sourceUrl: result.sourceUrl || "",
+    score: Number(result.score) || 0,
+  }));
 }
 
 function safeExternalUrl(value) {
   try {
-    const url = new URL(value, window.location.href);
+    const input = String(value || "").trim();
+    if (!input) return "";
+    const url = new URL(input, window.location.href);
     return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
   } catch {
     return "";
@@ -1264,25 +1314,32 @@ function buildPrompt(query, results) {
 /**
  * 构建多轮对话的 messages 数组。
  * 每轮：user 消息带当轮的检索片段，assistant 消息为回答。
- * 不重复发送历史片段以节省 token。
+ * 引用使用全局唯一的 [T轮次-片段]，避免多轮中的 [1] 指向错误原文。
  */
-function buildConversationMessages(query, results) {
+function buildConversationMessages(
+  query,
+  results,
+  turnId,
+  conversation = state.conversation,
+) {
   const systemPrompt =
     "你是一个严谨的中文文献考据助手。" +
     "只根据提供的南怀瑾相关资料片段回答问题。" +
-    "每个判断都要标注引用编号。如果资料没有明确支持，不要补充外部知识。" +
+    "资料编号格式为 [T轮次-片段]，每个判断都要原样标注对应编号。" +
+    "可以结合历史对话理解追问，但不得把不同轮次的同序号片段混为一谈。" +
+    "如果资料没有明确支持，不要补充外部知识。" +
     '区分"当前资料未找到"和"作者从未说过"。' +
     "如果用户追问，请结合之前的对话上下文回答。";
 
   const evidence = results.map((r, i) => {
     const text = r.text || r.chunk.p;
-    return `[${i + 1}] 《${r.chunk.w}》${r.chunk.c}\n${text}`;
+    return `[T${turnId}-${i + 1}] 《${r.chunk.w}》${r.chunk.c}\n${text}`;
   }).join("\n\n");
 
   const messages = [{ role: "system", content: systemPrompt }];
 
   // 携带历史对话（每轮的完整 user prompt + assistant 回答）
-  for (const turn of state.conversation) {
+  for (const turn of conversation) {
     if (turn.role === "user") {
       // 历史 user 消息：用存储的完整 prompt（含证据）
       messages.push({ role: "user", content: turn.prompt });
@@ -1303,7 +1360,82 @@ function buildConversationMessages(query, results) {
   return { messages, currentPrompt };
 }
 
-async function generateAIAnswer(query, results) {
+function createTurnEvidenceElement(turnId, results) {
+  const details = document.createElement("details");
+  details.className = "turn-evidence";
+
+  const summary = document.createElement("summary");
+  summary.textContent = `查看本轮引用原文（${results.length} 条）`;
+  details.appendChild(summary);
+
+  const list = document.createElement("div");
+  list.className = "turn-evidence-list";
+  results.forEach((result, index) => {
+    const item = document.createElement("article");
+    item.className = "turn-evidence-item";
+    item.id = `turn-${turnId}-cite-${index + 1}`;
+
+    const head = document.createElement("div");
+    head.className = "turn-evidence-head";
+    const source = document.createElement("strong");
+    source.textContent = `[T${turnId}-${index + 1}] 《${result.work}》`;
+    const chapter = document.createElement("span");
+    chapter.textContent = result.chapter;
+    head.append(source, chapter);
+
+    const body = document.createElement("p");
+    body.textContent = result.text || result.preview || "";
+
+    const actions = document.createElement("div");
+    actions.className = "turn-evidence-actions";
+    const score = document.createElement("span");
+    score.textContent = `相关度 ${result.score.toFixed(2)}`;
+    actions.appendChild(score);
+
+    const safeUrl = safeExternalUrl(result.sourceUrl);
+    if (safeUrl) {
+      const link = document.createElement("a");
+      link.href = safeUrl;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "原文链接";
+      actions.appendChild(link);
+    }
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.textContent = "复制片段";
+    copyButton.addEventListener("click", async () => {
+      await copyText(`《${result.work}》${result.chapter}\n${result.text || result.preview}`);
+      copyButton.textContent = "已复制 ✓";
+      setTimeout(() => { copyButton.textContent = "复制片段"; }, 1500);
+    });
+    actions.appendChild(copyButton);
+
+    item.append(head, actions, body);
+    list.appendChild(item);
+  });
+  details.appendChild(list);
+  return details;
+}
+
+function removeConversationTurn(turnId) {
+  state.conversation = state.conversation.filter((turn) => turn.turnId !== turnId);
+  if (typeof document === "undefined") return;
+  document.querySelectorAll("[data-conversation-turn]").forEach((node) => {
+    if (Number(node.dataset.conversationTurn) === turnId) node.remove();
+  });
+}
+
+function trimConversationHistory() {
+  const userTurns = state.conversation.filter((turn) => turn.role === "user");
+  while (userTurns.length > CONVERSATION_MAX_TURNS) {
+    const oldest = userTurns.shift();
+    removeConversationTurn(oldest.turnId);
+  }
+}
+
+async function generateAIAnswer(query, results, retrievalQuery = query) {
   if (!state.apiKey) {
     if (els.apiSettings) els.apiSettings.open = true;
     els.apiKeyInput?.focus();
@@ -1312,10 +1444,17 @@ async function generateAIAnswer(query, results) {
     return;
   }
 
-  const { messages, currentPrompt } = buildConversationMessages(query, results);
+  if (state.answerController) state.answerController.abort();
+  const answerRequestId = ++state.answerSeq;
+  const controller = new AbortController();
+  state.answerController = controller;
+  const turnId = state.nextTurnId++;
+  const resultSnapshots = snapshotResults(results);
+  const { messages, currentPrompt } = buildConversationMessages(query, results, turnId);
 
   els.aiAnswerBtn.disabled = true;
   els.aiAnswerBtn.textContent = "AI 回答中...";
+  if (els.quickAskBtn) els.quickAskBtn.disabled = true;
 
   const convContainer = document.getElementById("conversationList");
 
@@ -1327,19 +1466,18 @@ async function generateAIAnswer(query, results) {
   // 追加用户问题到对话历史（存储完整 prompt 以便后续轮次使用）
   state.conversation.push({
     role: "user",
+    turnId,
     content: query,
+    retrievalQuery,
     prompt: currentPrompt,
-    results: results.map((r) => ({
-      work: r.chunk.w,
-      chapter: r.chunk.c,
-      score: r.score,
-    })),
+    results: resultSnapshots,
   });
 
   // 显示用户问题气泡
   if (convContainer) {
     const userMsgDiv = document.createElement("div");
     userMsgDiv.className = "chat-msg chat-user";
+    userMsgDiv.dataset.conversationTurn = String(turnId);
     userMsgDiv.innerHTML =
       '<div class="chat-bubble">' + escapeHtml(query) + "</div>";
     convContainer.appendChild(userMsgDiv);
@@ -1347,10 +1485,9 @@ async function generateAIAnswer(query, results) {
   }
 
   // 创建 AI 流式回答容器
-  const msgId = "msg-" + Date.now();
   const msgDiv = document.createElement("div");
   msgDiv.className = "chat-msg chat-assistant";
-  msgDiv.id = msgId;
+  msgDiv.dataset.conversationTurn = String(turnId);
   msgDiv.innerHTML =
     '<div class="chat-bubble"><div class="streaming">AI 正在思考<span class="cursor">…</span></div></div>';
   if (convContainer) {
@@ -1365,6 +1502,7 @@ async function generateAIAnswer(query, results) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${state.apiKey}`,
       },
+      signal: controller.signal,
       body: JSON.stringify({
         model: DEEPSEEK_MODEL,
         messages,
@@ -1379,6 +1517,7 @@ async function generateAIAnswer(query, results) {
       const errText = await resp.text();
       throw new Error(`API ${resp.status}: ${errText.slice(0, 200)}`);
     }
+    if (!resp.body) throw new Error("AI 服务没有返回可读取的内容");
 
     // 流式读取
     const reader = resp.body.getReader();
@@ -1386,89 +1525,76 @@ async function generateAIAnswer(query, results) {
     let answerText = "";
     let buffer = "";
 
+    const consumeLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) return;
+      const dataStr = trimmed.slice(6);
+      if (dataStr === "[DONE]") return;
+      try {
+        const data = JSON.parse(dataStr);
+        const delta = data.choices?.[0]?.delta?.content;
+        if (!delta) return;
+        answerText += delta;
+        const rendered = renderAIText(answerText, turnId);
+        const bubble = msgDiv.querySelector(".chat-bubble");
+        if (bubble) {
+          bubble.innerHTML = '<div class="ai-answer">' + rendered +
+            '<span class="cursor">|</span></div>';
+          if (convContainer) convContainer.scrollTop = convContainer.scrollHeight;
+        }
+      } catch {
+        // 跳过无法解析的 SSE 行
+      }
+    };
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data: ")) continue;
-        const dataStr = trimmed.slice(6);
-        if (dataStr === "[DONE]") continue;
-
-        try {
-          const data = JSON.parse(dataStr);
-          const delta = data.choices?.[0]?.delta?.content;
-          if (delta) {
-            answerText += delta;
-            const rendered = renderAIText(answerText);
-            if (msgDiv) {
-              // 清除"思考中"状态，首次显示实际内容
-              msgDiv.querySelector(".chat-bubble").innerHTML =
-                '<div class="ai-answer">' + rendered +
-                '<span class="cursor">|</span></div>';
-              if (convContainer) {
-                convContainer.scrollTop = convContainer.scrollHeight;
-              }
-            }
-          }
-        } catch (e) {
-          // 跳过无法解析的行
-        }
-      }
+      lines.forEach(consumeLine);
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) consumeLine(buffer);
+    if (!answerText.trim()) throw new Error("AI 未返回有效回答，请稍后重试");
+    if (answerRequestId !== state.answerSeq) return;
 
-    // 最终渲染
-    const finalHtml = '<div class="ai-answer">' + renderAIText(answerText) + "</div>";
-
-    if (msgDiv) {
-      msgDiv.querySelector(".chat-bubble").innerHTML = finalHtml;
-      if (convContainer) {
-        convContainer.scrollTop = convContainer.scrollHeight;
-      }
+    // 最终回答与本轮原文快照放在同一气泡中，之后的检索不会覆盖它。
+    const bubble = msgDiv.querySelector(".chat-bubble");
+    if (bubble) {
+      const answer = document.createElement("div");
+      answer.className = "ai-answer";
+      answer.innerHTML = renderAIText(answerText, turnId);
+      bubble.replaceChildren(answer, createTurnEvidenceElement(turnId, resultSnapshots));
+      if (convContainer) convContainer.scrollTop = convContainer.scrollHeight;
     }
-    els.answerStatus.textContent =
-      state.conversation.length >= 2
-        ? `多轮对话（第 ${Math.floor(state.conversation.length / 2) + 1} 轮）`
-        : "AI 回答（基于检索片段）";
 
     // 保存到对话历史
-    state.conversation.push({ role: "assistant", content: answerText });
-
-    // 限制对话轮数
-    while (state.conversation.length > CONVERSATION_MAX_TURNS * 2) {
-      state.conversation.shift();
-    }
+    state.conversation.push({ role: "assistant", turnId, content: answerText });
+    trimConversationHistory();
+    const turnCount = state.conversation.filter((turn) => turn.role === "user").length;
+    els.answerStatus.textContent = turnCount > 1
+      ? `多轮对话（保留最近 ${turnCount} 轮）`
+      : "AI 回答（基于检索片段）";
   } catch (err) {
-    // 移除失败的用户消息（从历史和 UI）
-    while (state.conversation.length > 0 &&
-           state.conversation[state.conversation.length - 1].role === "user") {
-      state.conversation.pop();
-    }
-    // 移除 UI 中的用户气泡
-    if (convContainer && msgDiv && msgDiv.previousElementSibling &&
-        msgDiv.previousElementSibling.classList.contains("chat-user")) {
-      msgDiv.previousElementSibling.remove();
-    }
-    // 移除 AI 消息容器
-    if (msgDiv) msgDiv.remove();
-
-    const errHtml = '<div class="error-msg">AI 回答失败：' +
-      escapeHtml(err.message) + "</div>";
-    els.answerStatus.textContent = "AI 回答失败";
+    removeConversationTurn(turnId);
+    if (err.name === "AbortError" || answerRequestId !== state.answerSeq) return;
+    els.answerStatus.textContent = `AI 回答失败：${err.message}`;
+    showToast("AI 回答失败，请稍后重试");
 
     // 恢复空对话时的初始状态
     if (state.conversation.length === 0) {
       els.answerBox.style.display = "";
     }
   } finally {
-    els.aiAnswerBtn.disabled = false;
-    els.aiAnswerBtn.textContent = "AI 回答";
-    updateConversationUI();
+    if (answerRequestId === state.answerSeq) {
+      if (state.answerController === controller) state.answerController = null;
+      els.aiAnswerBtn.disabled = false;
+      els.aiAnswerBtn.textContent = "AI 回答";
+      if (els.quickAskBtn) els.quickAskBtn.disabled = false;
+      updateConversationUI();
+    }
   }
 }
 
@@ -1766,6 +1892,7 @@ async function runSearch() {
     els.resultCount.textContent = "0 条";
   } finally {
     if (requestId === state.searchSeq) {
+      if (state.searchController === controller) state.searchController = null;
       els.searchButton.disabled = false;
       updateModeHelp();
     }
@@ -1774,6 +1901,12 @@ async function runSearch() {
 
 // ── 多轮对话 ──────────────────────────────────────
 function startNewConversation() {
+  if (state.answerController) state.answerController.abort();
+  state.answerController = null;
+  state.answerSeq += 1;
+  if (state.searchController) state.searchController.abort();
+  state.searchController = null;
+  state.searchSeq += 1;
   state.conversation = [];
   els.answerBox.style.display = "";
   els.answerBox.innerHTML =
@@ -1784,6 +1917,12 @@ function startNewConversation() {
   const convList = document.getElementById("conversationList");
   if (convList) convList.innerHTML = "";
 
+  els.aiAnswerBtn.disabled = false;
+  els.aiAnswerBtn.textContent = "AI 回答";
+  if (els.quickAskBtn) {
+    els.quickAskBtn.disabled = false;
+    els.quickAskBtn.textContent = "发送";
+  }
   updateConversationUI();
 }
 
@@ -1907,18 +2046,24 @@ async function init() {
   async function sendFollowUp() {
     const q = els.quickAskInput.value.trim();
     if (!q) return;
+    let controller = null;
     els.quickAskInput.value = "";
     els.quickAskBtn.disabled = true;
     try {
       els.queryInput.value = q;
+      if (state.searchController) state.searchController.abort();
+      controller = new AbortController();
+      state.searchController = controller;
       const topK = parseInt(els.topK.value, 10) || 8;
       const parsedMinScore = parseFloat(els.minScore.value);
       const minScore = Number.isFinite(parsedMinScore) ? parsedMinScore : 0.08;
 
       const requestId = ++state.searchSeq;
+      const retrievalQuery = buildFollowUpRetrievalQuery(q);
       const semanticTerms = state.searchMode === "semantic"
-        ? await expandSemanticQuery(q)
+        ? await expandSemanticQuery(retrievalQuery)
         : [];
+      if (requestId !== state.searchSeq) return;
       const effectiveMode = state.searchMode === "semantic" && semanticTerms.length === 0
         ? "fuzzy"
         : state.searchMode;
@@ -1926,24 +2071,38 @@ async function init() {
       renderSearchInsight(semanticTerms, effectiveMode);
       let results;
       if (state.backendMode === "remote") {
-        results = await searchRemote(q, topK, minScore, semanticTerms, effectiveMode);
+        results = await searchRemote(
+          retrievalQuery,
+          topK,
+          minScore,
+          semanticTerms,
+          effectiveMode,
+          controller.signal,
+        );
       } else if (effectiveMode === "semantic") {
-        results = await searchSemantic(q, topK, minScore, semanticTerms);
+        results = await searchSemantic(retrievalQuery, topK, minScore, semanticTerms);
       } else {
-        results = searchFuzzy(q, topK, minScore);
+        const requestedMode = state.searchMode;
+        state.searchMode = effectiveMode;
+        results = search(retrievalQuery, topK, minScore);
+        state.searchMode = requestedMode;
       }
+      if (requestId !== state.searchSeq) return;
       state.lastResults = results;
 
       // 服务端结果已经包含全文；静态降级模式按作品补齐。
       els.quickAskBtn.textContent = "加载原文...";
       els.answerStatus.textContent = "正在加载检索片段的全文...";
       await ensureResultTexts(results);
-      await renderResults(q, results, requestId);
-      await generateAIAnswer(q, results);
+      if (requestId !== state.searchSeq) return;
+      await renderResults(retrievalQuery, results, requestId);
+      await generateAIAnswer(q, results, retrievalQuery);
     } catch (error) {
+      if (error.name === "AbortError") return;
       els.answerStatus.textContent = "追问检索失败";
       showToast(error.message);
     } finally {
+      if (state.searchController === controller) state.searchController = null;
       els.quickAskBtn.disabled = false;
       els.quickAskBtn.textContent = "发送";
     }
@@ -1970,7 +2129,7 @@ async function init() {
 
     await ensureResultTexts(state.lastResults);
 
-    await generateAIAnswer(els.queryInput.value, state.lastResults);
+    await generateAIAnswer(els.queryInput.value, state.lastResults, els.queryInput.value);
   });
 
   els.copyPrompt.addEventListener("click", async () => {
@@ -1988,9 +2147,14 @@ async function init() {
     if (!citeLink) return;
     const citeNum = citeLink.getAttribute("data-cite");
     if (!citeNum) return;
-    const target = document.getElementById(`cite-${citeNum}`);
+    const turnId = citeLink.getAttribute("data-turn");
+    const target = document.getElementById(
+      turnId ? `turn-${turnId}-cite-${citeNum}` : `cite-${citeNum}`,
+    );
     if (target) {
       e.preventDefault();
+      const evidenceDetails = target.closest("details");
+      if (evidenceDetails) evidenceDetails.open = true;
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       // 短暂闪烁高亮（如果 :target 不触发）
       target.style.boxShadow = "0 0 0 4px rgba(31,111,99,0.3)";
@@ -2114,5 +2278,10 @@ if (typeof module !== "undefined" && module.exports) {
     selectDiverseResults,
     renderAIText,
     makeContextualSnippet,
+    buildFollowUpRetrievalQuery,
+    buildConversationMessages,
+    snapshotResults,
+    safeExternalUrl,
+    trimConversationHistory,
   };
 }

@@ -20,6 +20,11 @@ const {
   expandSemanticQueryLocally,
   expandSemanticQuery,
   searchRemote,
+  buildFollowUpRetrievalQuery,
+  buildConversationMessages,
+  snapshotResults,
+  safeExternalUrl,
+  trimConversationHistory,
 } = require("../app.js");
 
 function useIndex(items) {
@@ -125,6 +130,77 @@ test("AI 最终输出会转义 HTML，同时保留引用跳转", () => {
   assert(!html.includes("<img"));
   assert(html.includes("&lt;img"));
   assert(html.includes('data-cite="2"'));
+});
+
+test("多轮 AI 引用包含唯一轮次，旧式编号默认绑定当前轮", () => {
+  const html = renderAIText("前轮 [T1-2]，本轮 [3]", 4);
+  assert(html.includes('data-turn="1" data-cite="2"'));
+  assert(html.includes('data-turn="4" data-cite="3"'));
+  assert(html.includes("[T1-2]"));
+});
+
+test("指代型追问继承上一轮检索主题，独立问题不会混入旧主题", () => {
+  const conversation = [{
+    role: "user",
+    content: "失眠时怎样通过数息静心",
+    retrievalQuery: "失眠 数息 安那般那",
+  }];
+  assert.equal(
+    buildFollowUpRetrievalQuery("那具体怎么做？", conversation),
+    "失眠 数息 安那般那；追问：那具体怎么做？",
+  );
+  assert.equal(
+    buildFollowUpRetrievalQuery("南怀瑾怎样讲家庭教育？", conversation),
+    "南怀瑾怎样讲家庭教育？",
+  );
+});
+
+test("每轮提示词使用不重复的引用编号并保留历史证据", () => {
+  const result = {
+    chunk: { id: "a", w: "定慧初修", c: "数息", n: 20, p: "数息可以摄心。" },
+    text: "数息可以摄心。",
+    sourceUrl: "https://example.com/a",
+    score: 0.8,
+  };
+  const history = [
+    { role: "user", turnId: 1, prompt: "问题：失眠\n资料片段：\n[T1-1] 旧证据" },
+    { role: "assistant", turnId: 1, content: "可参考 [T1-1]。" },
+  ];
+  const { messages, currentPrompt } = buildConversationMessages(
+    "具体如何数息",
+    [result],
+    2,
+    history,
+  );
+  assert(messages.some((message) => message.content.includes("[T1-1] 旧证据")));
+  assert(currentPrompt.includes("[T2-1] 《定慧初修》数息"));
+});
+
+test("对话结果快照保存正文，且空来源不会被解析成当前网页", () => {
+  const snapshots = snapshotResults([{
+    chunk: { id: "a", w: "甲", c: "乙", n: 12, p: "预览" },
+    text: "完整正文",
+    sourceUrl: "",
+    score: 0.7,
+  }]);
+  assert.equal(snapshots[0].text, "完整正文");
+  assert.equal(safeExternalUrl(""), "");
+});
+
+test("超出上限时按完整轮次清理对话，不留下错配的问答", () => {
+  state.conversation = [];
+  for (let turnId = 1; turnId <= 11; turnId += 1) {
+    state.conversation.push({ role: "user", turnId, content: `问题${turnId}` });
+    state.conversation.push({ role: "assistant", turnId, content: `回答${turnId}` });
+  }
+  trimConversationHistory();
+  assert.equal(state.conversation.length, 20);
+  assert.equal(state.conversation[0].turnId, 2);
+  assert.deepEqual(
+    [...new Set(state.conversation.map((turn) => turn.turnId))],
+    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  );
+  state.conversation = [];
 });
 
 test("结果摘要会定位到正文后部的命中词", () => {
