@@ -141,18 +141,18 @@
             <button id="quickAskBtn" type="button">发送</button>
           </div>
           <div id="answerBox" class="answer-box">
-            <p>检索结果将在此显示。点击"AI 回答"基于原文片段生成回答（需 API Key），或点击"复制提示词"手动粘贴到任意 LLM。</p>
+            <p>检索后可直接查看资料依据；点击“AI 回答”可生成带引用的回答（需 API Key）。</p>
           </div>
         </section>
 
-        <!-- 检索结果 -->
-        <section class="results-wrap" aria-label="检索结果">
-          <div class="section-head">
-            <h2>原文片段</h2>
+        <!-- 检索依据：默认折叠，避免与回答中的引用依据重复占位 -->
+        <details class="results-wrap" aria-label="检索依据">
+          <summary class="section-head">
+            <span class="results-title">检索依据</span>
             <span id="resultCount">0 条</span>
-          </div>
+          </summary>
           <div id="results" class="results"></div>
-        </section>
+        </details>
       </section>
     </main>
 
@@ -173,6 +173,7 @@
         <div class="result-meta-secondary">
           <span class="result-score"></span>
           <a class="result-source" href="#" target="_blank" rel="noopener">原文链接</a>
+          <button class="result-context" type="button" hidden>展开上下文</button>
           <button class="result-copy" type="button">复制片段</button>
         </div>
         <p class="snippet"></p>

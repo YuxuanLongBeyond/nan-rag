@@ -12,6 +12,7 @@ const INDEX_VERSION_URL = "index_version.json";
 const MANIFEST_URL = "works_manifest.json";
 const EMBEDDINGS_URL = "embeddings.bin";
 const SEARCH_API_URL = "/api/search";
+const CONTEXT_API_URL = "/api/context";
 const HEALTH_API_URL = "/api/health";
 const DB_NAME = "nan-rag-corpus";
 const DB_VERSION = 3;  // 升级：新增 embeddings store
@@ -111,6 +112,7 @@ const state = {
   lastSemanticTerms: [],
   lastSemanticSource: "",
   semanticCache: new Map(),
+  contextCache: new Map(),
   searchController: null,
 
   // 语义向量（从 embeddings.bin 加载）
@@ -375,6 +377,170 @@ function safeExternalUrl(value) {
   } catch {
     return "";
   }
+}
+
+async function fetchChunkContext(id, direction = "around", limit = 2) {
+  const safeDirection = ["around", "before", "after"].includes(direction)
+    ? direction
+    : "around";
+  const safeLimit = Math.max(1, Math.min(4, Math.trunc(Number(limit) || 2)));
+  const cacheKey = `${id}:${safeDirection}:${safeLimit}`;
+  if (state.contextCache.has(cacheKey)) return state.contextCache.get(cacheKey);
+
+  const request = fetch(CONTEXT_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Copyright-Accepted": "1",
+    },
+    body: JSON.stringify({ id, direction: safeDirection, limit: safeLimit }),
+  }).then(async (response) => {
+    let data = null;
+    try { data = await response.json(); } catch { /* handled below */ }
+    if (!response.ok) {
+      throw new Error(data?.error || `上下文接口返回 HTTP ${response.status}`);
+    }
+    return data;
+  }).catch((error) => {
+    state.contextCache.delete(cacheKey);
+    throw error;
+  });
+  state.contextCache.set(cacheKey, request);
+  return request;
+}
+
+function createContextChunkElement(chunk, isCurrent = false) {
+  const article = document.createElement("article");
+  article.className = `context-chunk${isCurrent ? " is-current" : ""}`;
+  article.dataset.chunkId = chunk.id;
+
+  const label = document.createElement("div");
+  label.className = "context-chunk-label";
+  label.textContent = isCurrent ? "当前引用" : "相邻原文";
+  const text = document.createElement("p");
+  text.textContent = chunk.text || "";
+  article.append(label, text);
+  return article;
+}
+
+/**
+ * 为没有可访问来源链接的命中片段提供站内上下文阅读器。
+ * 初次展开读取前后各两段，之后可沿同一作品、同一章节继续翻阅。
+ */
+function attachContextBrowser(button, current, elementsToHide = []) {
+  if (!button || !current?.id || state.backendMode !== "remote") return;
+  button.hidden = false;
+
+  const panel = document.createElement("section");
+  panel.className = "context-browser";
+  panel.hidden = true;
+  button.closest("article")?.appendChild(panel);
+
+  let initialized = false;
+  let loading = false;
+  let before = [];
+  let after = [];
+  let hasBefore = false;
+  let hasAfter = false;
+
+  const render = () => {
+    panel.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "context-browser-head";
+    const title = document.createElement("strong");
+    title.textContent = "同章节上下文";
+    const location = document.createElement("span");
+    location.textContent = `《${current.work}》${current.chapter || ""}`;
+    head.append(title, location);
+
+    const list = document.createElement("div");
+    list.className = "context-chunk-list";
+    before.forEach((chunk) => list.appendChild(createContextChunkElement(chunk)));
+    list.appendChild(createContextChunkElement(current, true));
+    after.forEach((chunk) => list.appendChild(createContextChunkElement(chunk)));
+
+    const nav = document.createElement("div");
+    nav.className = "context-browser-nav";
+    const previous = document.createElement("button");
+    previous.type = "button";
+    previous.textContent = hasBefore ? "继续看前文" : "已到本章节开头";
+    previous.disabled = !hasBefore || loading;
+    const next = document.createElement("button");
+    next.type = "button";
+    next.textContent = hasAfter ? "继续看后文" : "已到本章节末尾";
+    next.disabled = !hasAfter || loading;
+
+    previous.addEventListener("click", async () => {
+      if (loading || !hasBefore) return;
+      loading = true;
+      previous.disabled = true;
+      previous.textContent = "正在加载...";
+      try {
+        const anchor = before[0]?.id || current.id;
+        const data = await fetchChunkContext(anchor, "before", 2);
+        before = [...data.before, ...before];
+        hasBefore = Boolean(data.hasBefore);
+        loading = false;
+        render();
+      } catch (error) {
+        loading = false;
+        showToast(error.message);
+        render();
+      }
+    });
+    next.addEventListener("click", async () => {
+      if (loading || !hasAfter) return;
+      loading = true;
+      next.disabled = true;
+      next.textContent = "正在加载...";
+      try {
+        const anchor = after.at(-1)?.id || current.id;
+        const data = await fetchChunkContext(anchor, "after", 2);
+        after = [...after, ...data.after];
+        hasAfter = Boolean(data.hasAfter);
+        loading = false;
+        render();
+      } catch (error) {
+        loading = false;
+        showToast(error.message);
+        render();
+      }
+    });
+    nav.append(previous, next);
+    panel.append(head, list, nav);
+  };
+
+  const open = async () => {
+    panel.hidden = false;
+    elementsToHide.forEach((element) => { if (element) element.hidden = true; });
+    button.textContent = "收起上下文";
+    if (initialized || loading) return;
+    loading = true;
+    panel.innerHTML = '<p class="context-loading">正在加载前后原文...</p>';
+    try {
+      const data = await fetchChunkContext(current.id, "around", 2);
+      before = data.before || [];
+      after = data.after || [];
+      hasBefore = Boolean(data.hasBefore);
+      hasAfter = Boolean(data.hasAfter);
+      initialized = true;
+      loading = false;
+      render();
+    } catch (error) {
+      loading = false;
+      panel.innerHTML = `<p class="context-error">${escapeHtml(error.message)}</p>`;
+    }
+  };
+
+  button.addEventListener("click", () => {
+    if (!panel.hidden) {
+      panel.hidden = true;
+      elementsToHide.forEach((element) => { if (element) element.hidden = false; });
+      button.textContent = "展开上下文";
+      return;
+    }
+    open();
+  });
 }
 
 function highlight(text, query) {
@@ -1365,7 +1531,7 @@ function createTurnEvidenceElement(turnId, results) {
   details.className = "turn-evidence";
 
   const summary = document.createElement("summary");
-  summary.textContent = `查看本轮引用原文（${results.length} 条）`;
+  summary.textContent = `引用依据（${results.length} 条）`;
   details.appendChild(summary);
 
   const list = document.createElement("div");
@@ -1402,6 +1568,16 @@ function createTurnEvidenceElement(turnId, results) {
       actions.appendChild(link);
     }
 
+    let contextButton = null;
+    if (!safeUrl) {
+      contextButton = document.createElement("button");
+      contextButton.type = "button";
+      contextButton.className = "evidence-context";
+      contextButton.textContent = "展开上下文";
+      contextButton.hidden = true;
+      actions.appendChild(contextButton);
+    }
+
     const copyButton = document.createElement("button");
     copyButton.type = "button";
     copyButton.textContent = "复制片段";
@@ -1413,6 +1589,14 @@ function createTurnEvidenceElement(turnId, results) {
     actions.appendChild(copyButton);
 
     item.append(head, actions, body);
+    if (contextButton) {
+      attachContextBrowser(contextButton, {
+        id: result.id,
+        work: result.work,
+        chapter: result.chapter,
+        text: result.text || result.preview || "",
+      }, [body]);
+    }
     list.appendChild(item);
   });
   details.appendChild(list);
@@ -1789,12 +1973,19 @@ async function renderResults(query, results, requestId = state.searchSeq) {
 
     // 来源链接
     const srcLink = node.querySelector(".result-source");
+    const contextButton = node.querySelector(".result-context");
     const safeUrl = safeExternalUrl(sourceUrl);
     if (safeUrl) {
       srcLink.href = safeUrl;
       srcLink.title = safeUrl;
     } else {
       srcLink.style.display = "none";
+      attachContextBrowser(contextButton, {
+        id: r.chunk.id,
+        work: r.chunk.w,
+        chapter: r.chunk.c,
+        text: displayText,
+      }, [node.querySelector(".snippet"), detailsEl]);
     }
 
     fragment.appendChild(node);
@@ -2275,6 +2466,7 @@ if (typeof module !== "undefined" && module.exports) {
     expandSemanticQueryLocally,
     expandSemanticQuery,
     searchRemote,
+    fetchChunkContext,
     selectDiverseResults,
     renderAIText,
     makeContextualSnippet,

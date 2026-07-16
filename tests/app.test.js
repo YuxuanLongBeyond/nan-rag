@@ -20,6 +20,7 @@ const {
   expandSemanticQueryLocally,
   expandSemanticQuery,
   searchRemote,
+  fetchChunkContext,
   buildFollowUpRetrievalQuery,
   buildConversationMessages,
   snapshotResults,
@@ -97,6 +98,34 @@ test("语义模式用浏览器 Key 直连 DeepSeek，但站内搜索请求不携
     global.fetch = previousFetch;
     state.apiKey = "";
     state.searchMode = "fuzzy";
+  }
+});
+
+test("上下文请求只发送片段编号与翻页参数，不携带浏览器 API Key", async () => {
+  const previousFetch = global.fetch;
+  state.apiKey = "sk-browser-only";
+  state.contextCache.clear();
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return new Response(JSON.stringify({ before: [], after: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    await fetchChunkContext("chunk-1", "after", 2);
+    assert.equal(request.url, "/api/context");
+    assert.deepEqual(JSON.parse(request.options.body), {
+      id: "chunk-1",
+      direction: "after",
+      limit: 2,
+    });
+    assert(!JSON.stringify(request).includes("sk-browser-only"));
+  } finally {
+    global.fetch = previousFetch;
+    state.apiKey = "";
+    state.contextCache.clear();
   }
 });
 
