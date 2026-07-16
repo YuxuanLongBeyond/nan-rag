@@ -156,7 +156,7 @@ async function main() {
     await client.query("DELETE FROM rag_chunks WHERE build_version <> $1", [version]);
     console.log("创建中文模糊检索索引（通常需要几分钟）...");
     await client.query(`
-      CREATE INDEX rag_chunks_search_trgm_idx
+      CREATE INDEX IF NOT EXISTS rag_chunks_search_trgm_idx
       ON rag_chunks USING gin
       ((lower(work || ' ' || chapter || ' ' || content)) gin_trgm_ops)
     `);

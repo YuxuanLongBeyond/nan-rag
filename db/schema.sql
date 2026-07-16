@@ -63,6 +63,40 @@ AS $$
   LIMIT LEAST(GREATEST(p_limit, 1), 300);
 $$;
 
+-- pg_trgm 的 word_similarity 对一、二字中文词需要扫描大量候选。
+-- 短词只做字面包含召回，避免多个短词叠加后拖垮 Serverless 请求。
+CREATE OR REPLACE FUNCTION rag_search_short_term(p_term text, p_limit integer DEFAULT 120)
+RETURNS TABLE (
+  id text,
+  work text,
+  chapter text,
+  content text,
+  source_url text,
+  char_count integer,
+  db_score real
+)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    c.id,
+    c.work,
+    c.chapter,
+    c.content,
+    c.source_url,
+    c.char_count,
+    CASE
+      WHEN lower(c.work) LIKE '%' || lower(p_term) || '%' THEN 1.0
+      WHEN lower(c.chapter) LIKE '%' || lower(p_term) || '%' THEN 0.97
+      ELSE 0.9
+    END::real AS db_score
+  FROM rag_chunks AS c
+  WHERE lower(c.work || ' ' || c.chapter || ' ' || c.content)
+        LIKE '%' || lower(p_term) || '%'
+  ORDER BY db_score DESC, c.index_pos
+  LIMIT LEAST(GREATEST(p_limit, 1), 300);
+$$;
+
 CREATE OR REPLACE FUNCTION rag_search_exact(p_query text, p_limit integer DEFAULT 300)
 RETURNS TABLE (
   id text,

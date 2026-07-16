@@ -70,7 +70,9 @@ export async function searchHandler(request) {
       if (searchTerms.length === 0) return { rows: [], terms: [] };
       const perTerm = Math.max(60, Math.min(140, topK * 12));
       const resultSets = await sql.transaction(
-        searchTerms.map((term) => sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
+        searchTerms.map((term) => term.length <= 2
+          ? sql`SELECT * FROM rag_search_short_term(${term}, ${perTerm})`
+          : sql`SELECT * FROM rag_search_term(${term}, ${perTerm})`),
       );
       return { rows: mergeCandidateSets(resultSets), terms: searchTerms };
     }, 15000);
