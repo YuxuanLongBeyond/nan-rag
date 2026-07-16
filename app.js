@@ -25,11 +25,54 @@ const API_URL = "https://api.deepseek.com/v1/chat/completions";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CONVERSATION_MAX_TURNS = 10;
 const MAX_RESULTS_PER_SECTION = 2;
+const SEMANTIC_CACHE_LIMIT = 30;
 const QUERY_STOPWORDS = new Set([
   "南怀瑾", "南先生", "南老师", "先生", "老师", "如何", "怎么",
   "怎样", "什么", "什么是", "是什么", "为何", "为什么", "认为",
   "看待", "理解", "解释", "讲过", "说过", "请问", "一下",
 ]);
+const LOCAL_SEMANTIC_RULES = [
+  {
+    patterns: /睡不着|失眠|不眠|翻来覆去|难以入睡|夜里.*醒/,
+    terms: ["不寐", "数息", "安那般那", "出入息", "静坐", "止观"],
+  },
+  {
+    patterns: /心里很乱|心烦|烦乱|焦虑|脑子.*停不下来|胡思乱想|念头.*多|不能静/,
+    terms: ["散乱", "妄念", "摄心", "观心", "数息", "止观"],
+  },
+  {
+    patterns: /发脾气|脾气|愤怒|生气|恨|冲突|控制不住.*情绪/,
+    terms: ["嗔心", "瞋恨", "忍辱", "观心", "习气", "烦恼"],
+  },
+  {
+    patterns: /去世|死亡|死后|临终|生命终点|人死|往生/,
+    terms: ["中阴", "投生", "轮回", "六道", "临终", "生死"],
+  },
+  {
+    patterns: /打坐|静坐|腿麻|腿痛|盘腿|坐禅/,
+    terms: ["静坐", "坐禅", "七支坐法", "气脉", "腿发麻", "禅定"],
+  },
+  {
+    patterns: /呼吸|数呼吸|调息|气息/,
+    terms: ["数息", "安那般那", "出入息", "安般", "调息", "十六特胜"],
+  },
+  {
+    patterns: /恐惧|害怕|担心|没有安全感|胆怯/,
+    terms: ["恐惧", "无畏", "观心", "妄念", "定力", "安心"],
+  },
+  {
+    patterns: /痛苦|烦恼|压力|放不下|执着|想不开/,
+    terms: ["烦恼", "执著", "放下", "观心", "般若", "解脱"],
+  },
+  {
+    patterns: /命运|运气|前世|因果|报应/,
+    terms: ["因果", "业力", "果报", "宿业", "命运", "轮回"],
+  },
+  {
+    patterns: /教育孩子|孩子.*教育|亲子|子女|家庭教育/,
+    terms: ["家庭教育", "胎教", "孝道", "习气", "人格教育", "身教"],
+  },
+];
 
 // ── 全局状态 ──────────────────────────────────────
 const state = {
@@ -62,7 +105,11 @@ const state = {
   apiKey: localStorage.getItem(API_KEY_STORAGE) || "",
 
   // 搜索模式: "fuzzy" | "exact" | "semantic"
-  searchMode: "fuzzy",
+  searchMode: "semantic",
+  lastSemanticTerms: [],
+  lastSemanticSource: "",
+  semanticCache: new Map(),
+  searchController: null,
 
   // 语义向量（从 embeddings.bin 加载）
   embeddings: null,     // { dim, buffer: ArrayBuffer, min, max, version }
@@ -85,6 +132,7 @@ function bindEls() {
     loadingText: document.getElementById("loadingText"),
     loadingBar: document.getElementById("loadingBar"),
     loadingHint: document.getElementById("loadingHint"),
+    retryLoading: document.getElementById("retryLoading"),
 
     // 侧边栏
     libraryStats: document.getElementById("libraryStats"),
@@ -94,6 +142,7 @@ function bindEls() {
     apiKeyInput: document.getElementById("apiKeyInput"),
     saveApiKey: document.getElementById("saveApiKey"),
     apiStatus: document.getElementById("apiStatus"),
+    apiSettings: document.getElementById("apiSettings"),
 
     // 搜索
     queryInput: document.getElementById("queryInput"),
@@ -101,6 +150,10 @@ function bindEls() {
     topK: document.getElementById("topK"),
     minScore: document.getElementById("minScore"),
     strictMode: document.getElementById("strictMode"),
+    modeHelp: document.getElementById("modeHelp"),
+    searchInsight: document.getElementById("searchInsight"),
+    queryExamples: document.querySelectorAll("[data-query]"),
+    libraryDetails: document.getElementById("libraryDetails"),
 
     // 搜索模式
     searchModeRadios: document.querySelectorAll('input[name="searchMode"]'),
@@ -710,16 +763,24 @@ async function checkRemoteBackend() {
   }
 }
 
-async function searchRemote(query, topK, minScore, semanticTerms = []) {
+async function searchRemote(
+  query,
+  topK,
+  minScore,
+  semanticTerms = [],
+  mode = state.searchMode,
+  signal,
+) {
   const resp = await fetch(SEARCH_API_URL, {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       "X-Copyright-Accepted": "1",
     },
     body: JSON.stringify({
       query,
-      mode: state.searchMode,
+      mode,
       topK,
       minScore,
       semanticTerms,
@@ -771,18 +832,45 @@ function parseSemanticTerms(content, query) {
 }
 
 /**
+ * 常见日常说法到原著术语的轻量映射。它不代替模型理解，但能让没有 API Key
+ * 的用户也直接使用基础语义检索，并在模型或网络失败时提供可靠降级。
+ */
+function expandSemanticQueryLocally(query) {
+  const normalized = String(query || "").normalize("NFKC").toLowerCase();
+  const terms = [];
+  for (const rule of LOCAL_SEMANTIC_RULES) {
+    if (!rule.patterns.test(normalized)) continue;
+    for (const term of rule.terms) {
+      if (!normalized.includes(term.toLowerCase()) && !terms.includes(term)) terms.push(term);
+      if (terms.length >= 8) return terms;
+    }
+  }
+  return terms;
+}
+
+/**
  * 用用户自己的 DeepSeek Key 把自然语言问题扩展为语料中可能出现的概念词。
  * Key 只从浏览器直连 DeepSeek，不经过本站服务端。
  */
 async function expandSemanticQuery(query) {
+  const cacheKey = String(query || "").normalize("NFKC").trim().toLowerCase();
+  const cached = state.semanticCache.get(cacheKey);
+  if (cached) {
+    state.lastSemanticSource = cached.source;
+    return [...cached.terms];
+  }
+
+  const localTerms = expandSemanticQueryLocally(query);
   if (!state.apiKey) {
-    throw new Error("语义检索需要先在左侧填写 DeepSeek API Key");
+    state.lastSemanticSource = localTerms.length > 0 ? "local" : "fallback";
+    return localTerms;
   }
 
   const prompt = [
-    "请为南怀瑾著作语料检索扩展用户问题。",
-    "只给出 4 至 8 个原文中可能出现的相关概念、同义词、佛学术语或具体修持法门。",
-    "不要回答问题，不要添加解释，不要重复用户原词。",
+    "请把用户的日常中文问题转换成适合检索南怀瑾著作原文的查询词。",
+    "按相关性从高到低给出 6 至 8 个原文中可能实际出现的词。",
+    "优先包含：核心概念、传统术语、同义表达、具体修持法门；避免宽泛词和无关联想。",
+    "不要回答问题，不要解释，不要重复用户已经明确说出的词。",
     '必须输出 JSON，例如：{"terms":["数息","安那般那","出入息"]}',
     `用户问题：${query}`,
   ].join("\n");
@@ -817,8 +905,16 @@ async function expandSemanticQuery(query) {
         throw new Error(`DeepSeek API ${resp.status}: ${details.slice(0, 120)}`);
       }
       const data = await resp.json();
-      const terms = parseSemanticTerms(data.choices?.[0]?.message?.content, query);
-      if (terms.length > 0) return terms;
+      const aiTerms = parseSemanticTerms(data.choices?.[0]?.message?.content, query);
+      if (aiTerms.length > 0) {
+        const terms = [...new Set([...aiTerms, ...localTerms])].slice(0, 8);
+        state.lastSemanticSource = "ai";
+        state.semanticCache.set(cacheKey, { terms, source: "ai" });
+        while (state.semanticCache.size > SEMANTIC_CACHE_LIMIT) {
+          state.semanticCache.delete(state.semanticCache.keys().next().value);
+        }
+        return terms;
+      }
       lastError = new Error("DeepSeek 未返回可用的语义扩展词");
     } catch (error) {
       lastError = controller.signal.aborted
@@ -828,7 +924,13 @@ async function expandSemanticQuery(query) {
       clearTimeout(timeout);
     }
   }
-  throw lastError || new Error("语义扩展失败，请稍后重试");
+  if (localTerms.length > 0) {
+    state.lastSemanticSource = "local";
+    return localTerms;
+  }
+  state.lastSemanticSource = "fallback";
+  console.warn("AI 语义扩展失败，降级为增强模糊检索:", lastError);
+  return [];
 }
 
 async function ensureResultTexts(results) {
@@ -1203,7 +1305,10 @@ function buildConversationMessages(query, results) {
 
 async function generateAIAnswer(query, results) {
   if (!state.apiKey) {
-    showToast("请先在侧边栏设置 DeepSeek API Key");
+    if (els.apiSettings) els.apiSettings.open = true;
+    els.apiKeyInput?.focus();
+    els.apiSettings?.scrollIntoView({ behavior: "smooth", block: "center" });
+    showToast("设置 DeepSeek API Key 后即可生成引用回答");
     return;
   }
 
@@ -1439,6 +1544,54 @@ function renderLibrary() {
     });
 }
 
+function updateModeHelp() {
+  if (!els.modeHelp) return;
+  const help = {
+    semantic: state.apiKey
+      ? "会先理解问题并转换为原著术语，再进行多路召回和语义精排。"
+      : "可直接使用基础语义；设置 DeepSeek Key 后会自动增强复杂问题的理解。",
+    fuzzy: "适合已知部分词语、近似说法或不确定完整原句时使用。",
+    exact: "只查找连续出现的完整原句，适合核对明确引文。",
+  };
+  els.modeHelp.textContent = help[state.searchMode] || help.semantic;
+  els.searchButton.textContent = state.searchMode === "semantic" ? "智能检索" : "检索";
+}
+
+function renderSearchInsight(terms = [], effectiveMode = state.searchMode) {
+  if (!els.searchInsight) return;
+  els.searchInsight.replaceChildren();
+  if (state.searchMode !== "semantic") return;
+
+  const label = document.createElement("span");
+  label.className = "insight-label";
+  if (effectiveMode !== "semantic") {
+    label.textContent = "未识别到可扩展概念，已自动使用增强模糊检索";
+    els.searchInsight.appendChild(label);
+    return;
+  }
+  label.textContent = state.lastSemanticSource === "ai" ? "AI 理解出的相关概念" : "相关概念";
+  els.searchInsight.appendChild(label);
+  for (const term of terms.slice(0, 8)) {
+    const chip = document.createElement("span");
+    chip.className = "term-chip";
+    chip.textContent = term;
+    els.searchInsight.appendChild(chip);
+  }
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
 async function renderResults(query, results, requestId = state.searchSeq) {
   if (requestId !== state.searchSeq) return;
   els.results.innerHTML = "";
@@ -1454,6 +1607,7 @@ async function renderResults(query, results, requestId = state.searchSeq) {
   if (requestId !== state.searchSeq) return;
 
   const fragment = document.createDocumentFragment();
+  const displayQuery = [query, ...state.lastSemanticTerms].join(" ");
   results.forEach((r, i) => {
     const node = els.resultTemplate.content.cloneNode(true);
 
@@ -1484,8 +1638,15 @@ async function renderResults(query, results, requestId = state.searchSeq) {
     const displayText = fullText || r.chunk.p;
 
     // 高亮预览
-    const preview = makeContextualSnippet(displayText, query);
-    node.querySelector(".snippet").innerHTML = highlight(preview, query);
+    const preview = makeContextualSnippet(displayText, displayQuery);
+    node.querySelector(".snippet").innerHTML = highlight(preview, displayQuery);
+
+    const copyButton = node.querySelector(".result-copy");
+    copyButton.addEventListener("click", async () => {
+      await copyText(`《${r.chunk.w}》${r.chunk.c}\n${displayText}`);
+      copyButton.textContent = "已复制 ✓";
+      setTimeout(() => { copyButton.textContent = "复制片段"; }, 1500);
+    });
 
     // 完整内容
     const detailsEl = node.querySelector("details");
@@ -1524,6 +1685,9 @@ function renderAnswer(answer) {
 
 // ── 主流程 ────────────────────────────────────────
 async function runSearch() {
+  if (state.searchController) state.searchController.abort();
+  const controller = new AbortController();
+  state.searchController = controller;
   const requestId = ++state.searchSeq;
   const query = els.queryInput.value.trim();
   const topK = parseInt(els.topK.value, 10) || 8;
@@ -1537,12 +1701,15 @@ async function runSearch() {
   }
   if (!query) {
     state.lastResults = [];
+    state.lastSemanticTerms = [];
+    renderSearchInsight();
     renderAnswer(buildConservativeAnswer(query, [], strictMode));
     await renderResults(query, [], requestId);
     return;
   }
 
   els.searchButton.disabled = true;
+  els.searchButton.textContent = "检索中...";
   els.answerStatus.textContent = state.searchMode === "semantic"
     ? "正在理解问题并扩展语义..."
     : "正在检索服务端语料...";
@@ -1550,17 +1717,32 @@ async function runSearch() {
     const semanticTerms = state.searchMode === "semantic"
       ? await expandSemanticQuery(query)
       : [];
+    const effectiveMode = state.searchMode === "semantic" && semanticTerms.length === 0
+      ? "fuzzy"
+      : state.searchMode;
+    state.lastSemanticTerms = semanticTerms;
+    renderSearchInsight(semanticTerms, effectiveMode);
     if (requestId !== state.searchSeq) return;
     if (semanticTerms.length > 0) {
       els.answerStatus.textContent = `正在检索相关概念：${semanticTerms.slice(0, 4).join("、")}`;
     }
     let results;
     if (state.backendMode === "remote") {
-      results = await searchRemote(query, topK, minScore, semanticTerms);
-    } else if (state.searchMode === "semantic") {
+      results = await searchRemote(
+        query,
+        topK,
+        minScore,
+        semanticTerms,
+        effectiveMode,
+        controller.signal,
+      );
+    } else if (effectiveMode === "semantic") {
       results = await searchSemantic(query, topK, minScore, semanticTerms);
     } else {
+      const requestedMode = state.searchMode;
+      state.searchMode = effectiveMode;
       results = search(query, topK, minScore);
+      state.searchMode = requestedMode;
     }
     if (requestId !== state.searchSeq) return;
     state.lastResults = results;
@@ -1568,15 +1750,25 @@ async function runSearch() {
     const answer = buildConservativeAnswer(query, results, strictMode);
     renderAnswer(answer);
     await renderResults(query, results, requestId);
+    if (typeof history !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("q", query);
+      url.searchParams.set("mode", state.searchMode);
+      history.replaceState(null, "", url);
+    }
   } catch (error) {
     if (requestId !== state.searchSeq) return;
+    if (error.name === "AbortError") return;
     state.lastResults = [];
     els.answerStatus.textContent = "检索失败";
     els.answerBox.innerHTML = `<p class="error-msg">${escapeHtml(error.message)}</p>`;
     els.results.innerHTML = '<div class="empty">检索服务暂时不可用，请稍后重试</div>';
     els.resultCount.textContent = "0 条";
   } finally {
-    if (requestId === state.searchSeq) els.searchButton.disabled = false;
+    if (requestId === state.searchSeq) {
+      els.searchButton.disabled = false;
+      updateModeHelp();
+    }
   }
 }
 
@@ -1609,6 +1801,20 @@ function updateConversationUI() {
 async function init() {
   bindEls();
 
+  const initialParams = new URLSearchParams(window.location.search);
+  const initialMode = initialParams.get("mode");
+  if (["semantic", "fuzzy", "exact"].includes(initialMode)) {
+    state.searchMode = initialMode;
+    const initialRadio = document.querySelector(
+      `input[name="searchMode"][value="${initialMode}"]`,
+    );
+    if (initialRadio) initialRadio.checked = true;
+  }
+  if (els.libraryDetails && window.matchMedia("(max-width: 860px)").matches) {
+    els.libraryDetails.removeAttribute("open");
+  }
+  updateModeHelp();
+
   // 1. 版权声明
   if (!localStorage.getItem(COPYRIGHT_KEY)) {
     els.copyrightGate.style.display = "flex";
@@ -1621,6 +1827,7 @@ async function init() {
     els.loadingOverlay.style.display = "flex";
     startLoading();
   });
+  els.retryLoading?.addEventListener("click", startLoading);
 
   // 如果已接受版权声明，直接开始加载
   if (localStorage.getItem(COPYRIGHT_KEY)) {
@@ -1640,13 +1847,16 @@ async function init() {
     if (key) {
       state.apiKey = key;
       localStorage.setItem(API_KEY_STORAGE, key);
+      state.semanticCache.clear();
       els.apiStatus.textContent = "已保存 ✓";
       setTimeout(() => { els.apiStatus.textContent = "已设置"; }, 2000);
     } else {
       state.apiKey = "";
       localStorage.removeItem(API_KEY_STORAGE);
-      els.apiStatus.textContent = "已清除";
+      state.semanticCache.clear();
+      els.apiStatus.textContent = "已清除，仍可使用基础语义检索";
     }
+    updateModeHelp();
   });
 
   // 3. 事件绑定
@@ -1657,19 +1867,22 @@ async function init() {
   els.topK.addEventListener("change", runSearch);
   els.minScore.addEventListener("change", runSearch);
   els.strictMode.addEventListener("change", runSearch);
+  els.queryExamples.forEach((button) => {
+    button.addEventListener("click", () => {
+      els.queryInput.value = button.dataset.query || "";
+      els.queryInput.focus();
+      runSearch();
+    });
+  });
 
   // 搜索模式切换
   els.searchModeRadios.forEach((radio) => {
     radio.addEventListener("change", async () => {
       if (radio.checked) {
         state.searchMode = radio.value;
-        if (state.searchMode === "semantic" && !state.apiKey) {
-          showToast("语义检索需要先设置 DeepSeek API Key");
-          state.searchMode = "fuzzy";
-          const fuzzyRadio = document.querySelector('input[name="searchMode"][value="fuzzy"]');
-          if (fuzzyRadio) fuzzyRadio.checked = true;
-          return;
-        }
+        state.lastSemanticTerms = [];
+        renderSearchInsight();
+        updateModeHelp();
         // 纯静态降级模式可额外使用版本匹配的本地向量精排。
         if (state.backendMode !== "remote" &&
             state.searchMode === "semantic" && !hasSemanticSearch()) {
@@ -1706,13 +1919,18 @@ async function init() {
       const semanticTerms = state.searchMode === "semantic"
         ? await expandSemanticQuery(q)
         : [];
+      const effectiveMode = state.searchMode === "semantic" && semanticTerms.length === 0
+        ? "fuzzy"
+        : state.searchMode;
+      state.lastSemanticTerms = semanticTerms;
+      renderSearchInsight(semanticTerms, effectiveMode);
       let results;
       if (state.backendMode === "remote") {
-        results = await searchRemote(q, topK, minScore, semanticTerms);
-      } else if (state.searchMode === "semantic") {
+        results = await searchRemote(q, topK, minScore, semanticTerms, effectiveMode);
+      } else if (effectiveMode === "semantic") {
         results = await searchSemantic(q, topK, minScore, semanticTerms);
       } else {
-        results = search(q, topK, minScore);
+        results = searchFuzzy(q, topK, minScore);
       }
       state.lastResults = results;
 
@@ -1758,20 +1976,10 @@ async function init() {
   els.copyPrompt.addEventListener("click", async () => {
     if (!state.lastPrompt) return;
     try {
-      await navigator.clipboard.writeText(state.lastPrompt);
+      await copyText(state.lastPrompt);
       els.copyPrompt.textContent = "已复制 ✓";
       setTimeout(() => { els.copyPrompt.textContent = "复制提示词"; }, 1500);
-    } catch {
-      // fallback
-      const ta = document.createElement("textarea");
-      ta.value = state.lastPrompt;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      els.copyPrompt.textContent = "已复制 ✓";
-      setTimeout(() => { els.copyPrompt.textContent = "复制提示词"; }, 1500);
-    }
+    } catch { showToast("复制失败，请手动选择文本"); }
   });
 
   // 4. 引用跳转事件委托
@@ -1795,8 +2003,7 @@ async function init() {
   });
 
   // 5. URL 参数
-  const params = new URLSearchParams(window.location.search);
-  const q = params.get("q");
+  const q = initialParams.get("q");
   if (q) {
     els.queryInput.value = q;
   }
@@ -1804,17 +2011,24 @@ async function init() {
 
 async function startLoading() {
   try {
+    els.retryLoading.hidden = true;
+    els.loadingBar.parentElement.classList.remove("done", "error");
     els.loadingText.textContent = "正在连接检索服务...";
     els.loadingHint.textContent = "语料保存在服务端，浏览器无需下载大索引";
     els.loadingBar.style.width = "15%";
 
-    await loadManifest();
+    const [manifestResult, remoteResult] = await Promise.allSettled([
+      loadManifest(),
+      checkRemoteBackend(),
+    ]);
+    if (manifestResult.status === "rejected") throw manifestResult.reason;
     renderLibrary();
     els.loadingBar.style.width = "40%";
 
     let readyText;
     try {
-      const info = await checkRemoteBackend();
+      if (remoteResult.status === "rejected") throw remoteResult.reason;
+      const info = remoteResult.value;
       readyText = `已就绪 — ${Number(info.chunks).toLocaleString()} 个服务端检索片段`;
       els.loadingHint.textContent = "每次搜索只返回命中的少量原文片段";
     } catch (remoteError) {
@@ -1856,6 +2070,7 @@ async function startLoading() {
     els.loadingText.textContent = `检索服务尚未就绪：${err.message}`;
     els.loadingHint.textContent = "请在 Vercel 配置 DATABASE_URL，并先运行 npm run db:import";
     els.loadingBar.parentElement.classList.add("error");
+    els.retryLoading.hidden = false;
     console.error("初始化失败:", err);
   }
 }
@@ -1893,6 +2108,7 @@ if (typeof module !== "undefined" && module.exports) {
     searchFuzzy,
     searchSemantic,
     parseSemanticTerms,
+    expandSemanticQueryLocally,
     expandSemanticQuery,
     searchRemote,
     selectDiverseResults,

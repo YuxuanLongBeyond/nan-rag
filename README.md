@@ -6,7 +6,8 @@
 
 - **轻量首屏** — 只加载 HTML、CSS、JS、作品清单和 API 健康状态
 - **服务端中文检索** — PostgreSQL `pg_trgm` 候选召回，Node.js 2–4 字 n-gram 精排
-- **模糊、精确、语义模式** — 语义模式用用户自己的 DeepSeek Key 扩展同义概念，再从 Neon 召回和精排原文，不下载大向量文件
+- **智能语义、模糊、精确模式** — 智能语义无需 Key 即可处理常见日常说法；设置用户自己的 DeepSeek Key 后，会进一步扩展传统术语和同义概念
+- **多路召回与语义精排** — 综合原问题、扩展概念、命中线索数量和章节多样性排序，并围绕实际命中概念展示摘要
 - **完整证据片段** — `/api/search` 直接返回命中的原文、作品、章节和来源链接
 - **AI 辅助回答** — 继续支持用户自己的 DeepSeek API Key 和流式回答
 - **严格出处模式** — 找不到依据时明确区分“当前资料未找到”和“作者从未说过”
@@ -31,7 +32,7 @@
 
 `search_index.json`、`embeddings.bin`、`corpus/`、原始数据和 `rag/` 下的 JSONL 是本地生成资产，已通过 `.gitignore` 和 `.vercelignore` 排除：不会提交到 GitHub，也不会进入 Vercel 部署包。Git 只保留可复现的清洗/分块脚本；线上检索只使用 Neon 中已经导入的数据。
 
-语义检索的 DeepSeek API Key 只保存在用户浏览器中。浏览器先向 DeepSeek 请求少量检索扩展词，再把问题和扩展词发送给本站 `/api/search`；Vercel 和 Neon 都不会收到或保存用户的 API Key。若没有 Key，界面会明确提示并保持模糊检索，不会把普通宽搜冒充语义检索。
+语义检索的 DeepSeek API Key 只保存在用户浏览器中。没有 Key 时，浏览器会用本地的日常表达与原著术语映射做基础语义扩展；有 Key 时，再向 DeepSeek 请求更贴合当前问题的扩展词。本站 `/api/search` 只收到问题和扩展词，Vercel 和 Neon 都不会收到或保存用户的 API Key。模型请求失败或没有可靠扩展结果时，会透明降级为增强模糊检索。
 
 ## 第一次部署
 
@@ -135,7 +136,7 @@ npm run corpus:audit
 npm run retrieval:eval
 ```
 
-测试覆盖浏览器旧检索逻辑、DeepSeek 语义扩展、Key 隔离、服务端查询词清洗、跨表达召回、候选合并、精排、结果去重和 HTML 安全渲染。`retrieval:eval` 会遍历本地完整语料，分别验证精准、模糊、语义三种模式，因此需要先生成被 Git 忽略的 `corpus/`。
+测试覆盖本地与 DeepSeek 语义扩展、无 Key 降级、Key 隔离、服务端查询词清洗、跨表达召回、候选合并、语义精排、章节多样性和 HTML 安全渲染。`retrieval:eval` 会遍历本地完整语料，分别验证精准、模糊、语义三种模式，因此需要先生成被 Git 忽略的 `corpus/`。
 
 ## 关键文件
 

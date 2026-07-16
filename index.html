@@ -35,6 +35,7 @@
           <div id="loadingBar" class="progress-fill" style="width:0%"></div>
         </div>
         <p id="loadingHint" class="loading-hint">正在连接服务端检索...</p>
+        <button id="retryLoading" type="button" class="retry-loading" hidden>重新连接</button>
       </div>
     </div>
 
@@ -48,7 +49,7 @@
 
         <!-- API 设置 -->
         <div class="panel api-panel">
-          <details>
+          <details id="apiSettings">
             <summary class="panel-summary">AI 与语义检索设置</summary>
             <div class="api-config">
               <label for="apiKeyInput">DeepSeek API Key</label>
@@ -56,9 +57,9 @@
                 <input id="apiKeyInput" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
                 <button id="saveApiKey" type="button">保存</button>
               </div>
-              <p id="apiStatus" class="api-status"></p>
+              <p id="apiStatus" class="api-status">未设置也可使用基础语义检索</p>
               <p class="api-hint">
-                密钥仅存于本地浏览器，语义检索和 AI 回答会直接调用 DeepSeek 并按量计费。
+                密钥仅存于本地浏览器。填写后会增强语义理解，并可生成带原文引用的 AI 回答；调用 DeepSeek 会按量计费。
                 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">获取 Key →</a>
               </p>
             </div>
@@ -66,14 +67,16 @@
         </div>
 
         <!-- 资料库统计 -->
-        <div class="panel">
-          <div class="panel-title">
-            <h2>资料库</h2>
-            <span id="libraryStats">加载中...</span>
-          </div>
-          <div id="libraryList" class="library-list">
-            <div class="empty">正在加载...</div>
-          </div>
+        <div class="panel corpus-panel">
+          <details id="libraryDetails" open>
+            <summary class="corpus-summary">
+              <strong>资料库</strong>
+              <span id="libraryStats">加载中...</span>
+            </summary>
+            <div id="libraryList" class="library-list">
+              <div class="empty">正在加载...</div>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -84,28 +87,39 @@
           <label for="queryInput">问题或关键词</label>
           <div class="search-row">
             <input id="queryInput" type="search" placeholder="例如：如何理解“安那般那”？什么是“十六特胜”？" />
-            <button id="searchButton" type="button">检索</button>
+            <button id="searchButton" type="button">智能检索</button>
           </div>
-          <div class="controls">
-            <label>
-              返回片段
-              <input id="topK" type="number" min="3" max="20" step="1" value="8" />
-            </label>
-            <label>
-              最低分数
-              <input id="minScore" type="number" min="0" max="1" step="0.01" value="0.08" />
-            </label>
-            <label class="toggle">
-              <input id="strictMode" type="checkbox" checked />
-              严格出处模式
-            </label>
+          <div class="query-examples" aria-label="示例问题">
+            <span>试试：</span>
+            <button type="button" data-query="心里烦乱、晚上睡不着怎么办？">心烦失眠</button>
+            <button type="button" data-query="打坐时腿麻应该怎么办？">打坐腿麻</button>
+            <button type="button" data-query="人去世以后会经历什么？">生死问题</button>
           </div>
           <div class="search-modes">
             <span class="mode-label">搜索模式</span>
-            <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy" checked> 模糊</label>
+            <label class="mode-option" title="理解日常说法并查找原著中的相关概念"><input type="radio" name="searchMode" value="semantic" checked> 智能语义</label>
+            <label class="mode-option"><input type="radio" name="searchMode" value="fuzzy"> 模糊</label>
             <label class="mode-option"><input type="radio" name="searchMode" value="exact"> 精确</label>
-            <label class="mode-option" title="用 DeepSeek 理解问题并扩展相关概念，再从原文数据库召回；需要 API Key"><input type="radio" name="searchMode" value="semantic"> 语义</label>
           </div>
+          <p id="modeHelp" class="mode-help">推荐用于自然语言提问；无需 Key 可使用基础语义，设置 Key 后自动增强。</p>
+          <div id="searchInsight" class="search-insight" aria-live="polite"></div>
+          <details class="advanced-controls">
+            <summary>检索设置</summary>
+            <div class="controls">
+              <label>
+                返回片段
+                <input id="topK" type="number" min="3" max="20" step="1" value="8" />
+              </label>
+              <label>
+                最低分数
+                <input id="minScore" type="number" min="0" max="1" step="0.01" value="0.08" />
+              </label>
+              <label class="toggle">
+                <input id="strictMode" type="checkbox" checked />
+                严格出处模式
+              </label>
+            </div>
+          </details>
         </div>
 
         <!-- 回答面板 -->
@@ -159,6 +173,7 @@
         <div class="result-meta-secondary">
           <span class="result-score"></span>
           <a class="result-source" href="#" target="_blank" rel="noopener">原文链接</a>
+          <button class="result-copy" type="button">复制片段</button>
         </div>
         <p class="snippet"></p>
         <details style="display:none">

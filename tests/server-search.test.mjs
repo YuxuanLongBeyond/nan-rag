@@ -44,6 +44,8 @@ test("多个数据库候选集合按 id 去重并保留较高分", () => {
   ]);
   assert.equal(merged.length, 2);
   assert.equal(merged.find((row) => row.id === "a").db_score, 0.8);
+  assert.equal(merged.find((row) => row.id === "a").term_hits, 2);
+  assert.equal(merged.find((row) => row.id === "b").term_hits, 1);
 });
 
 test("服务端精排优先返回主题匹配片段并限制章节重复", () => {
@@ -74,4 +76,14 @@ test("语义精排能召回与问题没有原词重合的相关修持法门", ()
   );
   assert.equal(ranked[0].row.id, "semantic-hit");
   assert(ranked[0].score > ranked[1].score);
+});
+
+test("语义结果优先覆盖不同章节，减少相邻重复片段", () => {
+  const rows = [
+    { id: "a1", work: "定慧初修", chapter: "安般法门", content: "数息与出入息。", db_score: 0.9, term_hits: 2 },
+    { id: "a2", work: "定慧初修", chapter: "安般法门", content: "继续说明数息。", db_score: 0.88, term_hits: 1 },
+    { id: "b1", work: "静坐修道与长生不老", chapter: "静坐", content: "静坐摄心。", db_score: 0.75, term_hits: 1 },
+  ];
+  const ranked = rankCandidates(rows, "心静不下来", "semantic", 2, 0, ["数息", "静坐", "摄心"]);
+  assert.deepEqual(new Set(ranked.map(({ row }) => row.id)), new Set(["a1", "b1"]));
 });

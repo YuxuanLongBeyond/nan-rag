@@ -17,6 +17,7 @@ const {
   renderAIText,
   makeContextualSnippet,
   parseSemanticTerms,
+  expandSemanticQueryLocally,
   expandSemanticQuery,
   searchRemote,
 } = require("../app.js");
@@ -51,6 +52,17 @@ test("语义扩展只接受短文本数组并去重", () => {
   assert.deepEqual(terms, ["数息", "安那般那", "script"]);
 });
 
+test("没有 API Key 时也能把常见日常说法映射为原著术语", async () => {
+  state.apiKey = "";
+  const terms = expandSemanticQueryLocally("晚上翻来覆去睡不着，脑子也停不下来");
+  assert(terms.includes("不寐"));
+  assert(terms.includes("数息"));
+  assert(terms.includes("散乱"));
+  assert.deepEqual(await expandSemanticQuery("晚上睡不着怎么办"), [
+    "不寐", "数息", "安那般那", "出入息", "静坐", "止观",
+  ]);
+});
+
 test("语义模式用浏览器 Key 直连 DeepSeek，但站内搜索请求不携带 Key", async () => {
   const previousFetch = global.fetch;
   state.apiKey = "sk-only-in-browser";
@@ -71,7 +83,7 @@ test("语义模式用浏览器 Key 直连 DeepSeek，但站内搜索请求不携
   try {
     const terms = await expandSemanticQuery("脑子停不下来怎么办");
     await searchRemote("脑子停不下来怎么办", 8, 0.08, terms);
-    assert.deepEqual(terms, ["数息", "安那般那"]);
+    assert.deepEqual(terms.slice(0, 2), ["数息", "安那般那"]);
     assert.equal(calls[0].options.headers.Authorization, "Bearer sk-only-in-browser");
     const siteBody = JSON.parse(calls[1].options.body);
     assert.deepEqual(siteBody.semanticTerms, terms);

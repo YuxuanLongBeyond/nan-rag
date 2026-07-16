@@ -94,7 +94,9 @@ export function normalizeSemanticTerms(values, query = "", maxTerms = 8) {
 }
 
 export function buildSemanticSearchTerms(query, semanticTerms, maxTerms = 8) {
-  const terms = buildSearchTerms(query, 3);
+  // 自然语言问题通常含较多口语成分，只保留两个原问题检索词，给传统术语和
+  // 同义概念留出更多召回通道。
+  const terms = buildSearchTerms(query, 2);
   for (const term of normalizeSemanticTerms(semanticTerms, query)) {
     if (!terms.includes(term)) terms.push(term);
     if (terms.length >= maxTerms) break;
@@ -165,6 +167,7 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
     const ngramScore = cosineLike(queryGrams, makeGrams(text));
     const exactBoost = phrase.length >= 3 && compact.includes(phrase) ? 0.12 : 0;
     let semanticScore = 0;
+    let semanticBreadth = 0;
     let semanticTitleScore = 0;
     if (mode === "semantic") {
       const textGrams = makeGrams(text);
@@ -185,18 +188,28 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
         }
       }
       if (semanticValues.length > 0) {
-        const strongest = Math.max(...semanticValues);
-        const average = semanticValues.reduce((sum, value) => sum + value, 0) /
-          semanticValues.length;
-        semanticScore = strongest * 0.45 + average * 0.55;
+        // 一个片段通常只会使用扩展词中的一两种表达。按前三个最强信号聚合，
+        // 避免“没有同时包含全部同义词”反而被平均分惩罚。
+        const strongest = semanticValues
+          .map((value, index) => value * Math.max(0.72, 1 - index * 0.04))
+          .sort((a, b) => b - a);
+        semanticScore = strongest[0] * 0.58 +
+          (strongest[1] || 0) * 0.27 +
+          (strongest[2] || 0) * 0.15;
+        semanticBreadth = Math.min(
+          1,
+          semanticValues.filter((value) => value >= 0.65).length / 3,
+        );
       }
     }
 
     let score;
     if (mode === "semantic") {
-      score = dbScore * 0.14 + keywordScore * 0.12 + ngramScore * 0.08 +
-        semanticScore * 0.48 + semanticTitleScore * 0.10 +
-        titleScore * 0.03 + exactBoost;
+      const termHits = Number(row.term_hits) || 0;
+      const recallBreadth = Math.min(1, Math.max(0, termHits - 1) / 3);
+      score = dbScore * 0.10 + keywordScore * 0.08 + ngramScore * 0.04 +
+        semanticScore * 0.56 + semanticBreadth * 0.08 + recallBreadth * 0.05 +
+        semanticTitleScore * 0.07 + titleScore * 0.02 + exactBoost;
     } else if (mode === "broad") {
       score = dbScore * 0.18 + keywordScore * 0.22 + focusScore * 0.22 +
         ngramScore * 0.25 + titleScore * 0.08 + exactBoost;
@@ -211,13 +224,18 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
   const selected = [];
   const deferred = [];
   const sectionCounts = new Map();
+  const workCounts = new Map();
+  const sectionLimit = mode === "semantic" ? 1 : 2;
+  const workLimit = mode === "semantic" ? 3 : Number.POSITIVE_INFINITY;
   for (const result of scored) {
     if (result.score < minScore) continue;
     const section = `${result.row.work}\u0000${result.row.chapter}`;
     const count = sectionCounts.get(section) || 0;
-    if (count < 2 && selected.length < topK) {
+    const workCount = workCounts.get(result.row.work) || 0;
+    if (count < sectionLimit && workCount < workLimit && selected.length < topK) {
       selected.push(result);
       sectionCounts.set(section, count + 1);
+      workCounts.set(result.row.work, workCount + 1);
     } else {
       deferred.push(result);
     }
@@ -232,10 +250,19 @@ export function rankCandidates(rows, query, mode, topK, minScore, semanticTerms 
 export function mergeCandidateSets(resultSets) {
   const merged = new Map();
   for (const rows of resultSets) {
+    const seenInSet = new Set();
     for (const row of rows) {
       const previous = merged.get(row.id);
       if (!previous || Number(row.db_score) > Number(previous.db_score)) {
-        merged.set(row.id, row);
+        merged.set(row.id, {
+          ...row,
+          term_hits: previous?.term_hits || 0,
+        });
+      }
+      if (!seenInSet.has(row.id)) {
+        const current = merged.get(row.id);
+        current.term_hits = (current.term_hits || 0) + 1;
+        seenInSet.add(row.id);
       }
     }
   }
