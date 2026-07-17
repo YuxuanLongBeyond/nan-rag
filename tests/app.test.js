@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 global.localStorage = {
   getItem() { return null; },
@@ -32,6 +34,19 @@ const {
 function useIndex(items) {
   state.index = parseAndBuildIndex(JSON.stringify(items));
 }
+
+test("示例问题的按钮文字与提交查询保持一致", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const examples = [
+    ["孟子养气", "孟子所说的养气是什么意思？"],
+    ["打坐姿势", "打坐时应该采用什么姿势？"],
+    ["无住生心", "如何理解应无所住而生其心？"],
+  ];
+
+  for (const [label, query] of examples) {
+    assert.match(html, new RegExp(`data-query="${query}">${label}</button>`));
+  }
+});
 
 test("中文问题会去掉问句套话并生成 2–4 字检索词", () => {
   const tokens = tokenize("南怀瑾如何理解安那般那？");
